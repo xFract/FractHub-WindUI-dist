@@ -9699,6 +9699,116 @@ aj.Tab
 return ak.__type,ak
 end
 
+return af end function a.ba()
+local aa=a.load'c'
+local ae=aa.New
+
+local af={}
+
+function af.New(ah,aj)
+local ak=tonumber(aj.Value or aj.Count or aj.Columns or 2)or 2
+ak=math.max(1,math.floor(ak))
+
+local al=aj.Gap
+if al==nil then
+al=aj.Tab and aj.Tab.Gap or(aj.Window.NewElements and 1 or 6)
+end
+
+local am={
+__type="Columns",
+Elements={},
+Columns={},
+Count=ak,
+Gap=al,
+}
+
+local an=ae("Frame",{
+Size=UDim2.new(1,0,0,0),
+AutomaticSize="Y",
+BackgroundTransparency=1,
+Parent=aj.Parent,
+})
+
+ae("UIListLayout",{
+FillDirection="Horizontal",
+HorizontalAlignment="Center",
+Padding=UDim.new(0,al),
+Parent=an,
+})
+
+local function ao(ap)
+local aq=al*(ak-1)
+local ar=-aq
+local as=math.floor(ar/ak)
+local at=ar-(as*ak)
+if ap<=math.abs(at)then
+return as-1
+end
+return as
+end
+
+local ap=aj.ElementsModule
+
+for aq=1,ak do
+local ar={
+__type="Column",
+Elements={},
+Index=aq,
+ParentColumns=am,
+}
+
+local as=ae("Frame",{
+Size=UDim2.new(1/ak,ao(aq),0,0),
+AutomaticSize="Y",
+BackgroundTransparency=1,
+Parent=an,
+})
+
+ae("UIListLayout",{
+FillDirection="Vertical",
+Padding=UDim.new(0,al),
+SortOrder="LayoutOrder",
+Parent=as,
+})
+
+ap.Load(
+ar,
+as,
+ap.Elements,
+aj.Window,
+aj.WindUI,
+nil,
+ap,
+aj.UIScale,
+aj.Tab
+)
+
+ar.ElementFrame=as
+am.Columns[aq]=ar
+am[aq]=ar
+end
+
+am.ElementFrame=an
+
+function am.Get(aq,ar)
+return aq.Columns[ar]
+end
+
+function am.Destroy(aq)
+for ar,as in next,aq.Columns do
+for at,au in next,as.Elements do
+if au.Destroy then
+au:Destroy()
+end
+end
+end
+
+an:Destroy()
+end
+
+return am.__type,am
+end
+
 return af end function a.V()
 return{
 Elements={
@@ -9716,12 +9826,13 @@ Divider=a.load'K',
 Space=a.load'S',
 Image=a.load'T',
 Group=a.load'U',
+Columns=a.load'ba',
 
 },
 Load=function(aa,ae,af,ah,aj,ak,al,am,an)
 for ao,ap in next,af do
 aa[ao]=function(aq,ar)
-ar=ar or{}
+ar=type(ar)=="table"and ar or{Value=ar}
 ar.Tab=an or aa
 ar.ParentType=aa.__type
 ar.ParentTable=aa
