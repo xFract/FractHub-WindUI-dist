@@ -8,33 +8,31 @@ function ConfigAddon.Setup(context)
 	local Notify = context.Notify
 	local TrackedElements = context.TrackedElements or {}
 	local DefaultConfigName = context.DefaultConfigName or "default"
-	local BatchSize = context.LoadBatchSize or 8
-	local BatchDelay = context.LoadYieldDelay or 0
+	local LoadBatchSize = context.LoadBatchSize or 12
+	local LoadYieldDelay = context.LoadYieldDelay or 0
 
 	local activeConfigName = DefaultConfigName
 	local currentAutoloadName = nil
-	local isBusy = false
+	local busy = false
 
 	local configNameInput
 	local configFileDropdown
-	local configFileCode
 	local autoloadButton
 
 	local function getManager()
 		return Window and Window.ConfigManager or nil
 	end
 
-	local function getConfigPath()
+	local function getBasePath()
 		local manager = getManager()
 		if manager and manager.Path then
 			return manager.Path
 		end
-
 		return nil
 	end
 
-	local function ensureConfigPath()
-		local path = getConfigPath()
+	local function ensureBasePath()
+		local path = getBasePath()
 		if not path then
 			return nil, "Config path is unavailable."
 		end
@@ -46,8 +44,8 @@ function ConfigAddon.Setup(context)
 		return path
 	end
 
-	local function getConfigFilePath(configName)
-		local path, err = ensureConfigPath()
+	local function getConfigPath(configName)
+		local path, err = ensureBasePath()
 		if not path then
 			return nil, err
 		end
@@ -56,7 +54,7 @@ function ConfigAddon.Setup(context)
 	end
 
 	local function getAutoloadPath()
-		local path, err = ensureConfigPath()
+		local path, err = ensureBasePath()
 		if not path then
 			return nil, err
 		end
@@ -78,15 +76,41 @@ function ConfigAddon.Setup(context)
 		return value
 	end
 
-	local function syncConfigName(name)
-		activeConfigName = name
-
-		if configNameInput then
-			configNameInput:Set(name)
+	local function readAutoload()
+		local path = getAutoloadPath()
+		if not path or not isfile or not isfile(path) then
+			return nil
 		end
 
-		if configFileDropdown and configFileDropdown.Select then
-			configFileDropdown:Select(name)
+		local ok, value = pcall(readfile, path)
+		if not ok or type(value) ~= "string" or value == "" then
+			return nil
+		end
+
+		return value
+	end
+
+	local function writeAutoload(configName)
+		local path, err = getAutoloadPath()
+		if not path or not writefile then
+			return false, err or "writefile is unavailable"
+		end
+
+		local ok, writeErr = pcall(writefile, path, configName)
+		if not ok then
+			return false, tostring(writeErr)
+		end
+
+		currentAutoloadName = configName
+		return true
+	end
+
+	local function clearAutoload()
+		local path = getAutoloadPath()
+		currentAutoloadName = nil
+
+		if path and delfile and isfile and isfile(path) then
+			pcall(delfile, path)
 		end
 	end
 
@@ -96,14 +120,12 @@ function ConfigAddon.Setup(context)
 		end
 
 		local current = currentAutoloadName or "none"
-		local selected = activeConfigName or "none"
-		local state = currentAutoloadName == activeConfigName and "selected" or "not selected"
-
-		autoloadButton:SetDesc("Current: " .. current .. " | Selected: " .. selected .. " | State: " .. state)
+		local selected = getConfigName()
+		autoloadButton:SetDesc("Current: " .. current .. " | Selected: " .. selected)
 	end
 
 	local function getConfigFiles()
-		local path = getConfigPath()
+		local path = getBasePath()
 		if not path or not listfiles then
 			return {}
 		end
@@ -120,88 +142,21 @@ function ConfigAddon.Setup(context)
 		return files
 	end
 
-	local function refreshConfigFiles()
+	local function refreshConfigFiles(selectName)
 		local files = getConfigFiles()
-
-		if configFileCode then
-			configFileCode:SetCode(#files > 0 and table.concat(files, "\n") or "-- no config files found")
-		end
-
 		if configFileDropdown and configFileDropdown.Refresh then
 			configFileDropdown:Refresh(files)
+		end
+
+		if selectName and configFileDropdown and configFileDropdown.Select then
+			configFileDropdown:Select(selectName)
 		end
 
 		refreshAutoloadButton()
 		return files
 	end
 
-	local function readAutoloadName()
-		local path = getAutoloadPath()
-		if not path or not isfile or not isfile(path) then
-			return nil
-		end
-
-		local ok, value = pcall(readfile, path)
-		if not ok or type(value) ~= "string" or value == "" then
-			return nil
-		end
-
-		return value
-	end
-
-	local function setAutoloadName(configName)
-		local path, err = getAutoloadPath()
-		if not path or not writefile then
-			return false, err or "writefile is unavailable"
-		end
-
-		local ok, writeErr = pcall(writefile, path, configName)
-		if not ok then
-			return false, tostring(writeErr)
-		end
-
-		currentAutoloadName = configName
-		refreshAutoloadButton()
-		return true
-	end
-
-	local function clearAutoloadName()
-		local path = getAutoloadPath()
-		currentAutoloadName = nil
-
-		if path and delfile and isfile and isfile(path) then
-			pcall(delfile, path)
-		end
-
-		refreshAutoloadButton()
-	end
-
-	local function buildSaveData()
-		local manager = getManager()
-		if not manager then
-			return nil, "ConfigManager is unavailable."
-		end
-
-		local saveData = {
-			__version = 2,
-			__elements = {},
-			__custom = context.BuildCustomData and context.BuildCustomData() or {},
-		}
-
-		for flag, element in pairs(TrackedElements) do
-			local parser = manager.Parser[element.__type]
-			if parser and parser.Save then
-				local ok, parsed = pcall(parser.Save, element)
-				if ok and parsed then
-					saveData.__elements[flag] = parsed
-				end
-			end
-		end
-
-		return saveData
-	end
-
-	local function withSuppressedCallbacks(callback)
+	local function suppressCallbacks(callback)
 		local originals = {}
 
 		for _, element in pairs(TrackedElements) do
@@ -217,24 +172,50 @@ function ConfigAddon.Setup(context)
 			element.Callback = original
 		end
 
-		if not ok then
-			return false, result
-		end
-
-		return true, result
+		return ok, result
 	end
 
-	local function saveConfig(configName)
-		if isBusy then
+	local function buildSaveData()
+		local manager = getManager()
+		if not manager then
+			return nil, "ConfigManager is unavailable."
+		end
+
+		local data = {
+			__version = 1,
+			__elements = {},
+			__custom = context.BuildCustomData and context.BuildCustomData() or {},
+		}
+
+		for flag, element in pairs(TrackedElements) do
+			local parser = manager.Parser[element.__type]
+			if parser and parser.Save then
+				local ok, result = pcall(parser.Save, element)
+				if ok and result then
+					data.__elements[flag] = result
+				end
+			end
+		end
+
+		return data
+	end
+
+	local function saveConfig(configName, failIfExists)
+		if busy then
 			return false, "Config operation already in progress."
 		end
 
-		local filePath, err = getConfigFilePath(configName)
+		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
+
+		if failIfExists and isfile and isfile(filePath) then
+			return false, "Config already exists."
+		end
+
 		if not writefile then
-			return false, "writefile is unavailable"
+			return false, "writefile is unavailable."
 		end
 
 		local saveData, buildErr = buildSaveData()
@@ -249,32 +230,20 @@ function ConfigAddon.Setup(context)
 			return false, tostring(encoded)
 		end
 
-		isBusy = true
+		busy = true
 		local writeOk, writeErr = pcall(writefile, filePath, encoded)
-		isBusy = false
+		busy = false
 		if not writeOk then
 			return false, tostring(writeErr)
 		end
 
-		syncConfigName(configName)
-		refreshConfigFiles()
+		activeConfigName = configName
+		refreshConfigFiles(configName)
 		return true
 	end
 
-	local function createConfig(configName)
-		local filePath, err = getConfigFilePath(configName)
-		if not filePath then
-			return false, err
-		end
-		if isfile and isfile(filePath) then
-			return false, "Config already exists."
-		end
-
-		return saveConfig(configName)
-	end
-
 	local function loadConfig(configName, silent)
-		if isBusy then
+		if busy then
 			return false, "Config operation already in progress."
 		end
 
@@ -283,54 +252,56 @@ function ConfigAddon.Setup(context)
 			return false, "ConfigManager is unavailable."
 		end
 
-		local filePath, err = getConfigFilePath(configName)
+		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
+
 		if not isfile or not isfile(filePath) then
 			return false, "Config file does not exist."
 		end
 
-		local ok, decoded = pcall(function()
+		local decodeOk, decoded = pcall(function()
 			return HttpService:JSONDecode(readfile(filePath))
 		end)
-		if not ok then
+		if not decodeOk then
 			return false, "Failed to parse config file."
 		end
 
 		local entries = {}
-		for flag, data in pairs(decoded.__elements or {}) do
-			table.insert(entries, { flag = flag, data = data })
+		for flag, payload in pairs(decoded.__elements or {}) do
+			table.insert(entries, { Flag = flag, Payload = payload })
 		end
 		table.sort(entries, function(a, b)
-			return tostring(a.flag) < tostring(b.flag)
+			return tostring(a.Flag) < tostring(b.Flag)
 		end)
 
-		syncConfigName(configName)
-		isBusy = true
+		activeConfigName = configName
+		refreshConfigFiles(configName)
+		busy = true
 
 		task.spawn(function()
-			local success, loadErr = withSuppressedCallbacks(function()
+			local ok, loadErr = suppressCallbacks(function()
 				for index, entry in ipairs(entries) do
-					local element = TrackedElements[entry.flag]
-					local parser = element and manager.Parser[entry.data.__type]
+					local element = TrackedElements[entry.Flag]
+					local parser = element and manager.Parser[entry.Payload.__type]
 
 					if element and parser and parser.Load then
-						local applyOk, applyErr = pcall(parser.Load, element, entry.data)
+						local applyOk, applyErr = pcall(parser.Load, element, entry.Payload)
 						if not applyOk then
-							warn("[ConfigAddon] Failed to load flag " .. tostring(entry.flag) .. ": " .. tostring(applyErr))
+							warn("[ConfigAddon] Failed to load " .. tostring(entry.Flag) .. ": " .. tostring(applyErr))
 						end
 					end
 
-					if index % BatchSize == 0 then
-						task.wait(BatchDelay)
+					if index % LoadBatchSize == 0 then
+						task.wait(LoadYieldDelay)
 					end
 				end
 			end)
 
-			isBusy = false
+			busy = false
 
-			if not success then
+			if not ok then
 				Notify("Load Config", "Failed while applying config: " .. tostring(loadErr), "lucide:triangle-alert", 7)
 				return
 			end
@@ -343,8 +314,6 @@ function ConfigAddon.Setup(context)
 				pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
 			end
 
-			refreshConfigFiles()
-
 			if not silent then
 				Notify("Load Config", "Loaded: " .. configName, "lucide:folder-open")
 			end
@@ -354,17 +323,19 @@ function ConfigAddon.Setup(context)
 	end
 
 	local function deleteConfig(configName)
-		if isBusy then
+		if busy then
 			return false, "Config operation already in progress."
 		end
 
-		local filePath, err = getConfigFilePath(configName)
+		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
+
 		if not delfile then
-			return false, "delfile is unavailable"
+			return false, "delfile is unavailable."
 		end
+
 		if not isfile or not isfile(filePath) then
 			return false, "Config file does not exist."
 		end
@@ -375,21 +346,16 @@ function ConfigAddon.Setup(context)
 		end
 
 		if currentAutoloadName == configName then
-			clearAutoloadName()
+			clearAutoload()
 		end
 
 		refreshConfigFiles()
 		return true
 	end
 
-	configFileCode = Tab:Code({
-		Title = "Config Files",
-		Code = "-- loading config files",
-	})
-
 	configNameInput = Tab:Input({
 		Title = "Config Name",
-		Desc = "Type a new name or edit the selected one.",
+		Desc = "New or selected config name.",
 		Placeholder = DefaultConfigName,
 		Value = activeConfigName,
 		InputIcon = "lucide:file-cog",
@@ -403,13 +369,16 @@ function ConfigAddon.Setup(context)
 
 	configFileDropdown = Tab:Dropdown({
 		Title = "Config File",
-		Desc = "Pick an existing config file.",
+		Desc = "Existing config files.",
 		Values = {},
 		Value = nil,
 		AllowNone = true,
 		Callback = function(value)
 			if type(value) == "string" and value ~= "" then
-				syncConfigName(value)
+				activeConfigName = value
+				if configNameInput then
+					configNameInput:Set(value)
+				end
 				refreshAutoloadButton()
 			end
 		end,
@@ -417,36 +386,40 @@ function ConfigAddon.Setup(context)
 
 	autoloadButton = Tab:Button({
 		Title = "Auto Load",
-		Desc = "Current: none | Selected: " .. tostring(activeConfigName) .. " | State: not selected",
+		Desc = "Current: none | Selected: " .. tostring(activeConfigName),
 		Callback = function()
 			local configName = getConfigName()
-			if configName == "" then
-				Notify("Auto Load", "Select or enter a config name first.", "lucide:triangle-alert", 6)
-				return
-			end
-
 			if currentAutoloadName == configName then
-				clearAutoloadName()
+				clearAutoload()
 				Notify("Auto Load", "Cleared autoload config.", "lucide:badge-x")
 				return
 			end
 
-			local ok, err = setAutoloadName(configName)
+			local ok, err = writeAutoload(configName)
 			if not ok then
-				Notify("Auto Load", "Failed to set autoload: " .. tostring(err), "lucide:triangle-alert", 6)
+				Notify("Auto Load", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
+			refreshAutoloadButton()
 			Notify("Auto Load", "Autoload set to: " .. configName, "lucide:badge-check")
 		end,
 	})
 
 	Tab:Button({
+		Title = "Refresh List",
+		Desc = "Refresh config file list.",
+		Callback = function()
+			refreshConfigFiles()
+		end,
+	})
+
+	Tab:Button({
 		Title = "CreateConfig",
-		Desc = "Create a new config from the current UI state.",
+		Desc = "Create a new config.",
 		Callback = function()
 			local configName = getConfigName()
-			local ok, err = createConfig(configName)
+			local ok, err = saveConfig(configName, true)
 			if not ok then
 				Notify("CreateConfig", tostring(err), "lucide:triangle-alert", 6)
 				return
@@ -458,10 +431,10 @@ function ConfigAddon.Setup(context)
 
 	Tab:Button({
 		Title = "Save Config",
-		Desc = "Overwrite the selected config with current UI state.",
+		Desc = "Overwrite the selected config.",
 		Callback = function()
 			local configName = getConfigName()
-			local ok, err = saveConfig(configName)
+			local ok, err = saveConfig(configName, false)
 			if not ok then
 				Notify("Save Config", tostring(err), "lucide:triangle-alert", 6)
 				return
@@ -473,7 +446,7 @@ function ConfigAddon.Setup(context)
 
 	Tab:Button({
 		Title = "Load Config",
-		Desc = "Load the selected config with batched, callback-suppressed apply.",
+		Desc = "Load config with suppressed callbacks.",
 		Callback = function()
 			local configName = getConfigName()
 			local ok, err = loadConfig(configName, false)
@@ -485,7 +458,7 @@ function ConfigAddon.Setup(context)
 
 	Tab:Button({
 		Title = "Delete Config",
-		Desc = "Delete the selected config file.",
+		Desc = "Delete the selected config.",
 		Callback = function()
 			local configName = getConfigName()
 			local ok, err = deleteConfig(configName)
@@ -498,16 +471,16 @@ function ConfigAddon.Setup(context)
 		end,
 	})
 
-	currentAutoloadName = readAutoloadName()
+	currentAutoloadName = readAutoload()
 	refreshConfigFiles()
 
 	if currentAutoloadName then
 		task.defer(function()
 			local ok, err = loadConfig(currentAutoloadName, true)
-			if not ok then
-				Notify("Auto Load", "Failed to load " .. tostring(currentAutoloadName) .. ": " .. tostring(err), "lucide:triangle-alert", 7)
-			else
+			if ok then
 				Notify("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
+			else
+				Notify("Auto Load", "Failed: " .. tostring(err), "lucide:triangle-alert", 7)
 			end
 		end)
 	end
