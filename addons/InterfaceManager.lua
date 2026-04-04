@@ -799,7 +799,11 @@ function InterfaceManager:BuildInterfaceSection(tab, options)
 	end
 	table.sort(themeNames)
 
-	local AppearanceSection = tab:Section({
+	local columns = tab.Columns and tab:Columns({ Count = 2, Gap = 12 })
+	local leftColumn = columns and columns[1] or tab
+	local rightColumn = columns and columns[2] or tab
+
+	local AppearanceSection = leftColumn:Section({
 		Title = options.AppearanceTitle or "Appearance",
 		Desc = options.AppearanceDesc or "Interface options and saved preferences.",
 		Box = true,
@@ -853,7 +857,7 @@ function InterfaceManager:BuildInterfaceSection(tab, options)
 	})
 	self:StartKeybindWatcher(MinimizeKeybind)
 
-	local UtilitySection = tab:Section({
+	local UtilitySection = rightColumn:Section({
 		Title = options.UtilityTitle or "Utility",
 		Desc = options.UtilityDesc or "Quality of life settings.",
 		Box = true,
@@ -911,7 +915,7 @@ function InterfaceManager:BuildInterfaceSection(tab, options)
 		end,
 	})
 
-	local ServerSection = tab:Section({
+	local ServerSection = leftColumn:Section({
 		Title = options.ServerTitle or "Server & Safety",
 		Desc = options.ServerDesc or "Reconnect, hop, and staff detection helpers.",
 		Box = true,
