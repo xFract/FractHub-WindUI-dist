@@ -5,6 +5,7 @@ local TeleportService = game:GetService("TeleportService")
 local Lighting = game:GetService("Lighting")
 local GuiService = game:GetService("GuiService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local UserInputService = game:GetService("UserInputService")
 
 local InterfaceManager = {}
 InterfaceManager.__index = InterfaceManager
@@ -38,6 +39,9 @@ InterfaceManager.KeybindWatcherTask = nil
 InterfaceManager.OriginalLighting = nil
 InterfaceManager.PerformanceRestore = {}
 InterfaceManager.MinimizeButtonConfig = nil
+InterfaceManager.MinimizeButton = nil
+InterfaceManager.MinimizeButtonConnections = nil
+InterfaceManager.MinimizeButtonHooksBound = false
 
 function InterfaceManager:SetFolder(folder)
 	self.Folder = folder
@@ -487,37 +491,239 @@ end
 function InterfaceManager:GetMinimizeButtonConfig()
 	local window = self.Window
 	local configured = self.MinimizeButtonConfig or {}
-	local color = configured.Color
-
-	if color == nil then
-		color = ColorSequence.new(Color3.fromHex("40c9ff"), Color3.fromHex("e81cff"))
-	end
 
 	return {
 		Enabled = configured.Enabled ~= false,
-		OnlyMobile = configured.OnlyMobile == true and true or false,
-		OnlyIcon = configured.OnlyIcon ~= false,
 		Draggable = configured.Draggable ~= false,
 		Position = configured.Position or UDim2.new(1, -54, 1, -54),
-		Title = configured.Title or "Open",
 		Icon = configured.Icon or (window and window.Icon) or "lucide:panel-right-open",
+		Size = configured.Size or UDim2.fromOffset(44, 44),
+		IconSize = configured.IconSize or UDim2.fromOffset(42, 42),
 		CornerRadius = configured.CornerRadius or UDim.new(1, 0),
 		StrokeThickness = configured.StrokeThickness or 0,
-		Scale = configured.Scale or 1,
-		Color = color,
+		BackgroundColor3 = configured.BackgroundColor3 or Color3.fromRGB(8, 17, 31),
+		BackgroundTransparency = configured.BackgroundTransparency
+			or (configured.BackgroundTransparency == 0 and 0 or 0.2),
+		BorderColor3 = configured.BorderColor3 or Color3.fromRGB(125, 211, 252),
+		BorderTransparency = configured.BorderTransparency
+			or (configured.BorderTransparency == 0 and 0 or 0.15),
+		IconColor3 = configured.IconColor3 or Color3.fromRGB(255, 255, 255),
 	}
 end
 
-function InterfaceManager:ApplyMinimizeButton()
-	if not self.Window or type(self.Window.EditOpenButton) ~= "function" then
+function InterfaceManager:DisconnectMinimizeButton()
+	if not self.MinimizeButtonConnections then
+		return
+	end
+
+	for _, connection in ipairs(self.MinimizeButtonConnections) do
+		if connection and connection.Disconnect then
+			connection:Disconnect()
+		end
+	end
+
+	self.MinimizeButtonConnections = nil
+end
+
+function InterfaceManager:DestroyMinimizeButton()
+	self:DisconnectMinimizeButton()
+
+	if self.MinimizeButton then
+		self.MinimizeButton:Destroy()
+		self.MinimizeButton = nil
+	end
+end
+
+function InterfaceManager:GetMinimizeButtonParent()
+	if self.Library and self.Library.ScreenGui then
+		return self.Library.ScreenGui
+	end
+
+	if self.Window and self.Window.Parent then
+		return self.Window.Parent
+	end
+
+	return nil
+end
+
+function InterfaceManager:SetMinimizeButtonVisible(visible)
+	if self.MinimizeButton then
+		self.MinimizeButton.Visible = visible == true
+	end
+end
+
+function InterfaceManager:BindMinimizeButtonHooks()
+	if self.MinimizeButtonHooksBound or not self.Window then
+		return
+	end
+
+	self.MinimizeButtonHooksBound = true
+
+	local previousOpen = self.Window.OnOpenCallback
+	local previousClose = self.Window.OnCloseCallback
+	local previousDestroy = self.Window.OnDestroyCallback
+
+	self.Window:OnOpen(function(...)
+		self:SetMinimizeButtonVisible(false)
+		if previousOpen then
+			previousOpen(...)
+		end
+	end)
+
+	self.Window:OnClose(function(...)
+		if not self.Window.Destroyed then
+			self:SetMinimizeButtonVisible(true)
+		end
+		if previousClose then
+			previousClose(...)
+		end
+	end)
+
+	self.Window:OnDestroy(function(...)
+		self:DestroyMinimizeButton()
+		if previousDestroy then
+			previousDestroy(...)
+		end
+	end)
+end
+
+function InterfaceManager:CreateMinimizeButton()
+	self:DestroyMinimizeButton()
+
+	local parent = self:GetMinimizeButtonParent()
+	if not parent then
 		return false
 	end
 
-	local success = pcall(function()
-		self.Window:EditOpenButton(self:GetMinimizeButtonConfig())
+	local config = self:GetMinimizeButtonConfig()
+	if not config.Enabled then
+		return false
+	end
+
+	local holder = Instance.new("Frame")
+	holder.Name = "InterfaceManagerMinimizeButton"
+	holder.AnchorPoint = Vector2.new(0.5, 0.5)
+	holder.Position = config.Position
+	holder.Size = config.Size
+	holder.BackgroundTransparency = 1
+	holder.BorderSizePixel = 0
+	holder.ZIndex = 1000
+	holder.Visible = self.Window and self.Window.Closed or false
+	holder.Parent = parent
+
+	local button = Instance.new("ImageButton")
+	button.Name = "Button"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundColor3 = config.BackgroundColor3
+	button.BackgroundTransparency = config.BackgroundTransparency
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.Image = ""
+	button.ZIndex = 1001
+	button.Parent = holder
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = config.CornerRadius
+	corner.Parent = button
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = config.StrokeThickness
+	stroke.Color = config.BorderColor3
+	stroke.Transparency = config.BorderTransparency
+	stroke.Parent = button
+
+	local icon = Instance.new("ImageLabel")
+	icon.Name = "Icon"
+	icon.AnchorPoint = Vector2.new(0.5, 0.5)
+	icon.Position = UDim2.fromScale(0.5, 0.5)
+	icon.Size = config.IconSize
+	icon.BackgroundTransparency = 1
+	icon.ImageColor3 = config.IconColor3
+	icon.ScaleType = Enum.ScaleType.Fit
+	icon.ZIndex = 1002
+	icon.Parent = button
+
+	if type(config.Icon) == "string" and config.Icon ~= "" then
+		if string.find(config.Icon, "rbxassetid://", 1, true) or string.find(config.Icon, "http", 1, true) then
+			icon.Image = config.Icon
+		else
+			icon.Image = ""
+		end
+	end
+
+	local connections = {}
+	local dragging = false
+	local dragStart
+	local startPosition
+
+	connections[#connections + 1] = button.MouseButton1Click:Connect(function()
+		if self.Window and self.Window.Closed then
+			self.Window:Open()
+		elseif self.Window then
+			self.Window:Close()
+		end
 	end)
 
-	return success
+	if config.Draggable then
+		connections[#connections + 1] = button.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				dragStart = input.Position
+				startPosition = holder.Position
+
+				local endedConnection
+				endedConnection = input.Changed:Connect(function()
+					if input.UserInputState == Enum.UserInputState.End then
+						dragging = false
+						if endedConnection then
+							endedConnection:Disconnect()
+						end
+					end
+				end)
+
+				connections[#connections + 1] = endedConnection
+			end
+		end)
+
+		connections[#connections + 1] = UserInputService.InputChanged:Connect(function(input)
+			if not dragging then
+				return
+			end
+
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+				return
+			end
+
+			local delta = input.Position - dragStart
+			holder.Position = UDim2.new(
+				startPosition.X.Scale,
+				startPosition.X.Offset + delta.X,
+				startPosition.Y.Scale,
+				startPosition.Y.Offset + delta.Y
+			)
+		end)
+	end
+
+	self.MinimizeButton = holder
+	self.MinimizeButtonConnections = connections
+
+	return true
+end
+
+function InterfaceManager:ApplyMinimizeButton()
+	if not self.Window then
+		return false
+	end
+
+	self:BindMinimizeButtonHooks()
+
+	if type(self.Window.EditOpenButton) == "function" then
+		pcall(function()
+			self.Window:EditOpenButton({ Enabled = false })
+		end)
+	end
+
+	return self:CreateMinimizeButton()
 end
 
 function InterfaceManager:MinimizeWindow()
