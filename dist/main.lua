@@ -9881,7 +9881,7 @@ end
 
 local au
 for av,aw in next,at do
-if typeof(aw)=="table"and av~="ElementFrame"and av:match"Frame$"then
+if type(av)=="string"and typeof(aw)=="table"and av~="ElementFrame"and av:match"Frame$"then
 au=aw
 break
 end
@@ -9934,7 +9934,7 @@ function aa.UpdateAllElementShapes(ao,ap)
 for aq,ar in next,ap.Elements do
 local as
 for at,au in pairs(ar)do
-if typeof(au)=="table"and at:match"Frame$"then
+if type(at)=="string"and typeof(au)=="table"and at:match"Frame$"then
 as=au
 break
 end
