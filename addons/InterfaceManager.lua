@@ -37,6 +37,7 @@ InterfaceManager.StaffDetectorBound = false
 InterfaceManager.KeybindWatcherTask = nil
 InterfaceManager.OriginalLighting = nil
 InterfaceManager.PerformanceRestore = {}
+InterfaceManager.MinimizeButtonConfig = nil
 
 function InterfaceManager:SetFolder(folder)
 	self.Folder = folder
@@ -49,6 +50,11 @@ end
 
 function InterfaceManager:SetWindow(window)
 	self.Window = window
+end
+
+function InterfaceManager:SetMinimizeButtonConfig(config)
+	self.MinimizeButtonConfig = config
+	self:ApplyMinimizeButton()
 end
 
 function InterfaceManager:SetAutoExecuteSource(source)
@@ -478,6 +484,56 @@ function InterfaceManager:SetMinimizeBind(key)
 	self:SaveSettings()
 end
 
+function InterfaceManager:GetMinimizeButtonConfig()
+	local window = self.Window
+	local configured = self.MinimizeButtonConfig or {}
+	local color = configured.Color
+
+	if color == nil then
+		color = ColorSequence.new(Color3.fromHex("40c9ff"), Color3.fromHex("e81cff"))
+	end
+
+	return {
+		Enabled = configured.Enabled ~= false,
+		OnlyMobile = configured.OnlyMobile == true and true or false,
+		OnlyIcon = configured.OnlyIcon ~= false,
+		Draggable = configured.Draggable ~= false,
+		Position = configured.Position or UDim2.new(1, -54, 1, -54),
+		Title = configured.Title or "Open",
+		Icon = configured.Icon or (window and window.Icon) or "lucide:panel-right-open",
+		CornerRadius = configured.CornerRadius or UDim.new(1, 0),
+		StrokeThickness = configured.StrokeThickness or 0,
+		Scale = configured.Scale or 1,
+		Color = color,
+	}
+end
+
+function InterfaceManager:ApplyMinimizeButton()
+	if not self.Window or type(self.Window.EditOpenButton) ~= "function" then
+		return false
+	end
+
+	local success = pcall(function()
+		self.Window:EditOpenButton(self:GetMinimizeButtonConfig())
+	end)
+
+	return success
+end
+
+function InterfaceManager:MinimizeWindow()
+	if not self.Window or self.Window.Closed then
+		return false
+	end
+
+	self:ApplyMinimizeButton()
+
+	local success = pcall(function()
+		self.Window:Close()
+	end)
+
+	return success
+end
+
 function InterfaceManager:ApplyLoadedSettings()
 	local settings = self.Settings
 	if self.Library then
@@ -490,6 +546,7 @@ function InterfaceManager:ApplyLoadedSettings()
 	end
 
 	if self.Window then
+		self:ApplyMinimizeButton()
 		pcall(function()
 			self.Window:ToggleTransparency(settings.Transparency)
 		end)
@@ -498,9 +555,7 @@ function InterfaceManager:ApplyLoadedSettings()
 		end)
 		if settings.AutoMinimize then
 			task.defer(function()
-				if self.Window and not self.Window.Closed then
-					self.Window:Close()
-				end
+				self:MinimizeWindow()
 			end)
 		end
 	end
@@ -521,6 +576,10 @@ function InterfaceManager:BuildInterfaceSection(tab, options)
 	assert(self.Window, "Must set InterfaceManager.Window")
 
 	options = options or {}
+	if options.MinimizeButton then
+		self.MinimizeButtonConfig = options.MinimizeButton
+	end
+	self:ApplyMinimizeButton()
 	self:LoadSettings()
 	self:BindTeleportAutoExecute()
 	self:BindAutoRejoin()
