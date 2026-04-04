@@ -496,14 +496,14 @@ function InterfaceManager:GetMinimizeButtonConfig()
 		Enabled = configured.Enabled ~= false,
 		Draggable = configured.Draggable ~= false,
 		Position = configured.Position or UDim2.new(1, -54, 1, -54),
-		Icon = configured.Icon or (window and window.Icon) or "lucide:panel-right-open",
+		Icon = configured.Icon or "rbxassetid://112145022002617",
 		Size = configured.Size or UDim2.fromOffset(44, 44),
 		IconSize = configured.IconSize or UDim2.fromOffset(42, 42),
 		CornerRadius = configured.CornerRadius or UDim.new(1, 0),
 		StrokeThickness = configured.StrokeThickness or 0,
 		BackgroundColor3 = configured.BackgroundColor3 or Color3.fromRGB(8, 17, 31),
 		BackgroundTransparency = configured.BackgroundTransparency
-			or (configured.BackgroundTransparency == 0 and 0 or 0.2),
+			or (configured.BackgroundTransparency == 0 and 0 or 1),
 		BorderColor3 = configured.BorderColor3 or Color3.fromRGB(125, 211, 252),
 		BorderTransparency = configured.BorderTransparency
 			or (configured.BorderTransparency == 0 and 0 or 0.15),
