@@ -175,6 +175,31 @@ function ConfigAddon.Setup(context)
 		return ok, result
 	end
 
+	local function getElementCallbackValue(element, payload)
+		if payload ~= nil and payload.Value ~= nil then
+			return payload.Value
+		end
+
+		if element ~= nil and element.Value ~= nil then
+			return element.Value
+		end
+
+		return nil
+	end
+
+	local function syncTrackedCallbacks(entries)
+		for _, entry in ipairs(entries) do
+			local element = TrackedElements[entry.Flag]
+			if element and type(element.Callback) == "function" then
+				local callbackValue = getElementCallbackValue(element, entry.Payload)
+				local ok, err = pcall(element.Callback, callbackValue)
+				if not ok then
+					warn("[ConfigAddon] Failed to sync callback for " .. tostring(entry.Flag) .. ": " .. tostring(err))
+				end
+			end
+		end
+	end
+
 	local function buildSaveData()
 		local manager = getManager()
 		if not manager then
@@ -309,6 +334,8 @@ function ConfigAddon.Setup(context)
 			if context.ApplyCustomData then
 				pcall(context.ApplyCustomData, decoded.__custom or {}, configName)
 			end
+
+			syncTrackedCallbacks(entries)
 
 			if context.OnAfterLoad then
 				pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
