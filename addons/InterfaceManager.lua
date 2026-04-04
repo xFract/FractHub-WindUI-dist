@@ -495,7 +495,7 @@ function InterfaceManager:GetMinimizeButtonConfig()
 	return {
 		Enabled = configured.Enabled ~= false,
 		Draggable = configured.Draggable ~= false,
-		Position = configured.Position or UDim2.new(1, -54, 1, -54),
+		Position = configured.Position or UDim2.new(0.5, 0, 0, 28),
 		Icon = configured.Icon or "rbxassetid://112145022002617",
 		Size = configured.Size or UDim2.fromOffset(44, 44),
 		IconSize = configured.IconSize or UDim2.fromOffset(42, 42),
