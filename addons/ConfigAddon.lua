@@ -11,6 +11,8 @@ function ConfigAddon.Setup(context)
 	local autoLoadEnabled = true
 	local activeConfig = nil
 	local configNameInput = nil
+	local configFileDropdown = nil
+	local autoLoadButton = nil
 
 	local function registerTracked(config)
 		for flag, element in pairs(TrackedElements) do
@@ -50,29 +52,46 @@ function ConfigAddon.Setup(context)
 		return config
 	end
 
-	Tab:Paragraph({
-		Title = "Config File",
-		Desc = "Manage one config file with a simple set of actions.",
-	})
+	local function refreshAutoLoadState()
+		if not autoLoadButton then
+			return
+		end
+
+		autoLoadButton:SetDesc(
+			"Current config: "
+				.. tostring(activeConfigName)
+				.. " | Auto load: "
+				.. (autoLoadEnabled and "enabled" or "disabled")
+		)
+	end
 
 	local configFileCode = Tab:Code({
 		Title = "Config File",
-		Code = "-- no config selected",
+		Code = "-- no config files found",
 	})
 
 	local function refreshConfigFile()
 		if not Window.ConfigManager then
 			configFileCode:SetCode("-- ConfigManager unavailable")
+			if configFileDropdown and configFileDropdown.Refresh then
+				configFileDropdown:Refresh({})
+			end
 			return
 		end
 
 		local files = Window.ConfigManager:AllConfigs()
 		if #files == 0 then
 			configFileCode:SetCode("-- no config files found")
+			if configFileDropdown and configFileDropdown.Refresh then
+				configFileDropdown:Refresh({})
+			end
 			return
 		end
 
 		configFileCode:SetCode(table.concat(files, "\n"))
+		if configFileDropdown and configFileDropdown.Refresh then
+			configFileDropdown:Refresh(files)
+		end
 	end
 
 	configNameInput = Tab:Input({
@@ -88,15 +107,38 @@ function ConfigAddon.Setup(context)
 		end,
 	})
 
-	local autoLoadToggle = Tab:Toggle({
-		Title = "Auto Load",
-		Desc = "Enable autoload for the selected config.",
-		Value = autoLoadEnabled,
+	configFileDropdown = Tab:Dropdown({
+		Title = "Config File",
+		Desc = "Select an existing config file.",
+		Values = {},
+		Value = nil,
+		AllowNone = true,
 		Callback = function(value)
-			autoLoadEnabled = value
-			if activeConfig then
-				activeConfig:SetAutoLoad(value)
+			if type(value) == "string" and value ~= "" then
+				activeConfigName = value
+				if configNameInput then
+					configNameInput:Set(value)
+				end
+				refreshAutoLoadState()
 			end
+		end,
+	})
+
+	autoLoadButton = Tab:Button({
+		Title = "Auto Load",
+		Desc = "Current config: " .. tostring(activeConfigName) .. " | Auto load: enabled",
+		Callback = function()
+			autoLoadEnabled = not autoLoadEnabled
+			if activeConfig then
+				activeConfig:SetAutoLoad(autoLoadEnabled)
+			end
+
+			refreshAutoLoadState()
+			Notify(
+				"Auto Load",
+				"Auto load is now " .. (autoLoadEnabled and "enabled" or "disabled"),
+				autoLoadEnabled and "lucide:badge-check" or "lucide:badge-x"
+			)
 		end,
 	})
 
@@ -116,6 +158,7 @@ function ConfigAddon.Setup(context)
 			end
 
 			refreshConfigFile()
+			refreshAutoLoadState()
 			Notify("CreateConfig", "Current config: " .. configName, "lucide:file-plus-2")
 		end,
 	})
@@ -137,7 +180,11 @@ function ConfigAddon.Setup(context)
 
 			config:SetAutoLoad(autoLoadEnabled)
 			config:Save()
+			if configFileDropdown and configFileDropdown.Select then
+				configFileDropdown:Select(configName)
+			end
 			refreshConfigFile()
+			refreshAutoLoadState()
 			Notify("Save Config", "Saved: " .. configName, "lucide:save")
 		end,
 	})
@@ -163,7 +210,11 @@ function ConfigAddon.Setup(context)
 				context.OnAfterLoad(config, configName, result)
 			end
 
+			if configFileDropdown and configFileDropdown.Select then
+				configFileDropdown:Select(configName)
+			end
 			refreshConfigFile()
+			refreshAutoLoadState()
 			Notify("Load Config", "Loaded: " .. configName, "lucide:folder-open")
 		end,
 	})
@@ -189,12 +240,13 @@ function ConfigAddon.Setup(context)
 			end
 
 			refreshConfigFile()
+			refreshAutoLoadState()
 			Notify("Delete Config", "Deleted: " .. configName, "lucide:trash-2")
 		end,
 	})
 
 	refreshConfigFile()
-	autoLoadToggle:Set(autoLoadEnabled)
+	refreshAutoLoadState()
 
 	return {
 		GetActiveName = function()
