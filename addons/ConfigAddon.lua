@@ -3,21 +3,139 @@ local HttpService = game:GetService("HttpService")
 local ConfigAddon = {}
 
 function ConfigAddon.Setup(context)
+	context = type(context) == "table" and context or {}
+
 	local Window = context.Window
 	local Tab = context.Tab
-	local Notify = context.Notify
+	local Notify = type(context.Notify) == "function" and context.Notify or function(title, message)
+		warn("[ConfigAddon] " .. tostring(title) .. ": " .. tostring(message))
+	end
 	local TrackedElements = context.TrackedElements or {}
 	local DefaultConfigName = context.DefaultConfigName or "default"
-	local LoadBatchSize = context.LoadBatchSize or 12
-	local LoadYieldDelay = context.LoadYieldDelay or 0
+	local LoadBatchSize = math.max(1, math.floor(tonumber(context.LoadBatchSize) or 12))
+	local LoadYieldDelay = math.max(0, tonumber(context.LoadYieldDelay) or 0)
 
-	local activeConfigName = DefaultConfigName
+	local activeConfigName = type(DefaultConfigName) == "string" and DefaultConfigName or "default"
 	local currentAutoloadName = nil
 	local busy = false
 
 	local configNameInput
 	local configFileDropdown
 	local autoloadButton
+	local getConfigName
+
+	local function notifySafe(...)
+		local ok, err = pcall(Notify, ...)
+		if not ok then
+			warn("[ConfigAddon] Notify failed: " .. tostring(err))
+		end
+	end
+
+	local function normalizeDirectoryPath(path)
+		if type(path) ~= "string" or path == "" then
+			return nil
+		end
+
+		if not path:match("[/\\]$") then
+			path = path .. "/"
+		end
+
+		return path
+	end
+
+	local function sanitizeConfigName(value)
+		if type(value) ~= "string" then
+			return nil
+		end
+
+		value = value:gsub("^%s+", ""):gsub("%s+$", "")
+		value = value:gsub("[<>:\"/\\|%?%*%c]", "_")
+		value = value:gsub("%.+$", "")
+		value = value:gsub("^%.+", "")
+		value = value:gsub("%s+$", "")
+
+		if value == "" then
+			return nil
+		end
+
+		if #value > 64 then
+			value = value:sub(1, 64)
+		end
+
+		return value
+	end
+
+	local function getSelectedConfigName()
+		local normalized = sanitizeConfigName(getConfigName and getConfigName() or activeConfigName)
+		if normalized then
+			return normalized
+		end
+
+		return sanitizeConfigName(activeConfigName) or sanitizeConfigName(DefaultConfigName) or "default"
+	end
+
+	local function safeIsFile(path)
+		if not path or not isfile then
+			return false
+		end
+
+		local ok, result = pcall(isfile, path)
+		return ok and result == true
+	end
+
+	local function safeReadFile(path)
+		if not path or not readfile then
+			return false, "readfile is unavailable."
+		end
+
+		local ok, result = pcall(readfile, path)
+		if not ok then
+			return false, tostring(result)
+		end
+
+		return true, result
+	end
+
+	local function safeWriteFile(path, content)
+		if not path or not writefile then
+			return false, "writefile is unavailable."
+		end
+
+		local ok, result = pcall(writefile, path, content)
+		if not ok then
+			return false, tostring(result)
+		end
+
+		return true
+	end
+
+	local function safeDeleteFile(path)
+		if not path or not delfile then
+			return false, "delfile is unavailable."
+		end
+
+		local ok, result = pcall(delfile, path)
+		if not ok then
+			return false, tostring(result)
+		end
+
+		return true
+	end
+
+	if not Window or not Tab then
+		warn("[ConfigAddon] Setup requires both Window and Tab.")
+		return {
+			GetActiveName = function()
+				return activeConfigName
+			end,
+			GetAutoloadName = function()
+				return nil
+			end,
+			Refresh = function()
+				return {}
+			end,
+		}
+	end
 
 	local function getManager()
 		return Window and Window.ConfigManager or nil
@@ -26,7 +144,7 @@ function ConfigAddon.Setup(context)
 	local function getBasePath()
 		local manager = getManager()
 		if manager and manager.Path then
-			return manager.Path
+			return normalizeDirectoryPath(manager.Path)
 		end
 		return nil
 	end
@@ -37,14 +155,29 @@ function ConfigAddon.Setup(context)
 			return nil, "Config path is unavailable."
 		end
 
-		if isfolder and not isfolder(path) and makefolder then
-			makefolder(path)
+		if isfolder and makefolder then
+			local folderOk, exists = pcall(isfolder, path)
+			if not folderOk then
+				return nil, "Failed to query config path."
+			end
+
+			if not exists then
+				local createOk, createErr = pcall(makefolder, path)
+				if not createOk then
+					return nil, tostring(createErr)
+				end
+			end
 		end
 
 		return path
 	end
 
 	local function getConfigPath(configName)
+		configName = sanitizeConfigName(configName)
+		if not configName then
+			return nil, "Config name is invalid."
+		end
+
 		local path, err = ensureBasePath()
 		if not path then
 			return nil, err
@@ -62,43 +195,39 @@ function ConfigAddon.Setup(context)
 		return path .. "autoload.txt"
 	end
 
-	local function getConfigName()
+	getConfigName = function()
 		local value = configNameInput and configNameInput.Value or activeConfigName
-		if type(value) ~= "string" then
-			return activeConfigName
-		end
-
-		value = value:gsub("^%s+", ""):gsub("%s+$", "")
-		if value == "" then
-			return activeConfigName
-		end
-
-		return value
+		return sanitizeConfigName(value) or sanitizeConfigName(activeConfigName) or sanitizeConfigName(DefaultConfigName) or "default"
 	end
 
 	local function readAutoload()
 		local path = getAutoloadPath()
-		if not path or not isfile or not isfile(path) then
+		if not path or not safeIsFile(path) then
 			return nil
 		end
 
-		local ok, value = pcall(readfile, path)
-		if not ok or type(value) ~= "string" or value == "" then
+		local ok, value = safeReadFile(path)
+		if not ok or type(value) ~= "string" then
 			return nil
 		end
 
-		return value
+		return sanitizeConfigName(value)
 	end
 
 	local function writeAutoload(configName)
-		local path, err = getAutoloadPath()
-		if not path or not writefile then
-			return false, err or "writefile is unavailable"
+		configName = sanitizeConfigName(configName)
+		if not configName then
+			return false, "Config name is invalid."
 		end
 
-		local ok, writeErr = pcall(writefile, path, configName)
+		local path, err = getAutoloadPath()
+		if not path then
+			return false, err
+		end
+
+		local ok, writeErr = safeWriteFile(path, configName)
 		if not ok then
-			return false, tostring(writeErr)
+			return false, writeErr
 		end
 
 		currentAutoloadName = configName
@@ -109,8 +238,8 @@ function ConfigAddon.Setup(context)
 		local path = getAutoloadPath()
 		currentAutoloadName = nil
 
-		if path and delfile and isfile and isfile(path) then
-			pcall(delfile, path)
+		if path and safeIsFile(path) then
+			safeDeleteFile(path)
 		end
 	end
 
@@ -130,8 +259,13 @@ function ConfigAddon.Setup(context)
 			return {}
 		end
 
+		local ok, listedFiles = pcall(listfiles, path)
+		if not ok or type(listedFiles) ~= "table" then
+			return {}
+		end
+
 		local files = {}
-		for _, file in next, listfiles(path) do
+		for _, file in next, listedFiles do
 			local name = file:match("([^\\/]+)%.json$")
 			if name then
 				table.insert(files, name)
@@ -206,18 +340,34 @@ function ConfigAddon.Setup(context)
 			return nil, "ConfigManager is unavailable."
 		end
 
+		local customData = {}
+		if context.BuildCustomData then
+			local customOk, customResult = pcall(context.BuildCustomData)
+			if not customOk then
+				return nil, "Failed to build custom config data."
+			end
+
+			if customResult ~= nil and type(customResult) ~= "table" then
+				return nil, "Custom config data must be a table."
+			end
+
+			customData = customResult or {}
+		end
+
 		local data = {
 			__version = 1,
 			__elements = {},
-			__custom = context.BuildCustomData and context.BuildCustomData() or {},
+			__custom = customData,
 		}
 
 		for flag, element in pairs(TrackedElements) do
-			local parser = manager.Parser[element.__type]
+			local parser = element and manager.Parser and manager.Parser[element.__type]
 			if parser and parser.Save then
 				local ok, result = pcall(parser.Save, element)
 				if ok and result then
 					data.__elements[flag] = result
+				elseif not ok then
+					warn("[ConfigAddon] Failed to save " .. tostring(flag) .. ": " .. tostring(result))
 				end
 			end
 		end
@@ -230,17 +380,18 @@ function ConfigAddon.Setup(context)
 			return false, "Config operation already in progress."
 		end
 
+		configName = sanitizeConfigName(configName)
+		if not configName then
+			return false, "Config name is invalid."
+		end
+
 		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
 
-		if failIfExists and isfile and isfile(filePath) then
+		if failIfExists and safeIsFile(filePath) then
 			return false, "Config already exists."
-		end
-
-		if not writefile then
-			return false, "writefile is unavailable."
 		end
 
 		local saveData, buildErr = buildSaveData()
@@ -256,13 +407,16 @@ function ConfigAddon.Setup(context)
 		end
 
 		busy = true
-		local writeOk, writeErr = pcall(writefile, filePath, encoded)
+		local writeOk, writeErr = safeWriteFile(filePath, encoded)
 		busy = false
 		if not writeOk then
-			return false, tostring(writeErr)
+			return false, writeErr
 		end
 
 		activeConfigName = configName
+		if configNameInput and configNameInput.Set then
+			configNameInput:Set(configName)
+		end
 		refreshConfigFiles(configName)
 		return true
 	end
@@ -277,20 +431,46 @@ function ConfigAddon.Setup(context)
 			return false, "ConfigManager is unavailable."
 		end
 
+		configName = sanitizeConfigName(configName)
+		if not configName then
+			return false, "Config name is invalid."
+		end
+
 		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
 
-		if not isfile or not isfile(filePath) then
+		if not safeIsFile(filePath) then
 			return false, "Config file does not exist."
 		end
 
+		local readOk, rawData = safeReadFile(filePath)
+		if not readOk then
+			return false, rawData
+		end
+
 		local decodeOk, decoded = pcall(function()
-			return HttpService:JSONDecode(readfile(filePath))
+			return HttpService:JSONDecode(rawData)
 		end)
-		if not decodeOk then
+		if not decodeOk or type(decoded) ~= "table" then
 			return false, "Failed to parse config file."
+		end
+
+		if decoded.__version == nil and decoded.__elements == nil then
+			decoded = {
+				__version = 0,
+				__elements = decoded,
+				__custom = {},
+			}
+		end
+
+		if decoded.__elements ~= nil and type(decoded.__elements) ~= "table" then
+			return false, "Config data is corrupted."
+		end
+
+		if decoded.__custom ~= nil and type(decoded.__custom) ~= "table" then
+			decoded.__custom = {}
 		end
 
 		local entries = {}
@@ -309,13 +489,17 @@ function ConfigAddon.Setup(context)
 			local ok, loadErr = suppressCallbacks(function()
 				for index, entry in ipairs(entries) do
 					local element = TrackedElements[entry.Flag]
-					local parser = element and manager.Parser[entry.Payload.__type]
+					local payload = type(entry.Payload) == "table" and entry.Payload or nil
+					local parserType = payload and payload.__type
+					local parser = element and parserType and manager.Parser and manager.Parser[parserType]
 
-					if element and parser and parser.Load then
-						local applyOk, applyErr = pcall(parser.Load, element, entry.Payload)
+					if element and parser and parser.Load and payload then
+						local applyOk, applyErr = pcall(parser.Load, element, payload)
 						if not applyOk then
 							warn("[ConfigAddon] Failed to load " .. tostring(entry.Flag) .. ": " .. tostring(applyErr))
 						end
+					elseif element and entry.Payload ~= nil and not payload then
+						warn("[ConfigAddon] Skipped invalid payload for " .. tostring(entry.Flag))
 					end
 
 					if index % LoadBatchSize == 0 then
@@ -327,22 +511,28 @@ function ConfigAddon.Setup(context)
 			busy = false
 
 			if not ok then
-				Notify("Load Config", "Failed while applying config: " .. tostring(loadErr), "lucide:triangle-alert", 7)
+				notifySafe("Load Config", "Failed while applying config: " .. tostring(loadErr), "lucide:triangle-alert", 7)
 				return
 			end
 
 			if context.ApplyCustomData then
-				pcall(context.ApplyCustomData, decoded.__custom or {}, configName)
+				local customOk, customErr = pcall(context.ApplyCustomData, decoded.__custom or {}, configName)
+				if not customOk then
+					warn("[ConfigAddon] Failed to apply custom data: " .. tostring(customErr))
+				end
 			end
 
 			syncTrackedCallbacks(entries)
 
 			if context.OnAfterLoad then
-				pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
+				local afterLoadOk, afterLoadErr = pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
+				if not afterLoadOk then
+					warn("[ConfigAddon] OnAfterLoad failed: " .. tostring(afterLoadErr))
+				end
 			end
 
 			if not silent then
-				Notify("Load Config", "Loaded: " .. configName, "lucide:folder-open")
+				notifySafe("Load Config", "Loaded: " .. configName, "lucide:folder-open")
 			end
 		end)
 
@@ -354,22 +544,23 @@ function ConfigAddon.Setup(context)
 			return false, "Config operation already in progress."
 		end
 
+		configName = sanitizeConfigName(configName)
+		if not configName then
+			return false, "Config name is invalid."
+		end
+
 		local filePath, err = getConfigPath(configName)
 		if not filePath then
 			return false, err
 		end
 
-		if not delfile then
-			return false, "delfile is unavailable."
-		end
-
-		if not isfile or not isfile(filePath) then
+		if not safeIsFile(filePath) then
 			return false, "Config file does not exist."
 		end
 
-		local ok, deleteErr = pcall(delfile, filePath)
+		local ok, deleteErr = safeDeleteFile(filePath)
 		if not ok then
-			return false, tostring(deleteErr)
+			return false, deleteErr
 		end
 
 		if currentAutoloadName == configName then
@@ -387,8 +578,9 @@ function ConfigAddon.Setup(context)
 		Value = activeConfigName,
 		InputIcon = "lucide:file-cog",
 		Callback = function(value)
-			if type(value) == "string" and value:gsub("%s+", "") ~= "" then
-				activeConfigName = value
+			local normalized = sanitizeConfigName(value)
+			if normalized then
+				activeConfigName = normalized
 				refreshAutoloadButton()
 			end
 		end,
@@ -401,10 +593,11 @@ function ConfigAddon.Setup(context)
 		Value = nil,
 		AllowNone = true,
 		Callback = function(value)
-			if type(value) == "string" and value ~= "" then
-				activeConfigName = value
+			local normalized = sanitizeConfigName(value)
+			if normalized then
+				activeConfigName = normalized
 				if configNameInput then
-					configNameInput:Set(value)
+					configNameInput:Set(normalized)
 				end
 				refreshAutoloadButton()
 			end
@@ -415,21 +608,21 @@ function ConfigAddon.Setup(context)
 		Title = "Auto Load",
 		Desc = "Current: none | Selected: " .. tostring(activeConfigName),
 		Callback = function()
-			local configName = getConfigName()
+			local configName = getSelectedConfigName()
 			if currentAutoloadName == configName then
 				clearAutoload()
-				Notify("Auto Load", "Cleared autoload config.", "lucide:badge-x")
+				notifySafe("Auto Load", "Cleared autoload config.", "lucide:badge-x")
 				return
 			end
 
 			local ok, err = writeAutoload(configName)
 			if not ok then
-				Notify("Auto Load", tostring(err), "lucide:triangle-alert", 6)
+				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
 			refreshAutoloadButton()
-			Notify("Auto Load", "Autoload set to: " .. configName, "lucide:badge-check")
+			notifySafe("Auto Load", "Autoload set to: " .. configName, "lucide:badge-check")
 		end,
 	})
 
@@ -445,14 +638,14 @@ function ConfigAddon.Setup(context)
 		Title = "CreateConfig",
 		Desc = "Create a new config.",
 		Callback = function()
-			local configName = getConfigName()
+			local configName = getSelectedConfigName()
 			local ok, err = saveConfig(configName, true)
 			if not ok then
-				Notify("CreateConfig", tostring(err), "lucide:triangle-alert", 6)
+				notifySafe("CreateConfig", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			Notify("CreateConfig", "Created: " .. configName, "lucide:file-plus-2")
+			notifySafe("CreateConfig", "Created: " .. configName, "lucide:file-plus-2")
 		end,
 	})
 
@@ -460,14 +653,14 @@ function ConfigAddon.Setup(context)
 		Title = "Save Config",
 		Desc = "Overwrite the selected config.",
 		Callback = function()
-			local configName = getConfigName()
+			local configName = getSelectedConfigName()
 			local ok, err = saveConfig(configName, false)
 			if not ok then
-				Notify("Save Config", tostring(err), "lucide:triangle-alert", 6)
+				notifySafe("Save Config", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			Notify("Save Config", "Saved: " .. configName, "lucide:save")
+			notifySafe("Save Config", "Saved: " .. configName, "lucide:save")
 		end,
 	})
 
@@ -475,10 +668,10 @@ function ConfigAddon.Setup(context)
 		Title = "Load Config",
 		Desc = "Load config with suppressed callbacks.",
 		Callback = function()
-			local configName = getConfigName()
+			local configName = getSelectedConfigName()
 			local ok, err = loadConfig(configName, false)
 			if not ok then
-				Notify("Load Config", tostring(err), "lucide:triangle-alert", 6)
+				notifySafe("Load Config", tostring(err), "lucide:triangle-alert", 6)
 			end
 		end,
 	})
@@ -487,14 +680,14 @@ function ConfigAddon.Setup(context)
 		Title = "Delete Config",
 		Desc = "Delete the selected config.",
 		Callback = function()
-			local configName = getConfigName()
+			local configName = getSelectedConfigName()
 			local ok, err = deleteConfig(configName)
 			if not ok then
-				Notify("Delete Config", tostring(err), "lucide:triangle-alert", 6)
+				notifySafe("Delete Config", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			Notify("Delete Config", "Deleted: " .. configName, "lucide:trash-2")
+			notifySafe("Delete Config", "Deleted: " .. configName, "lucide:trash-2")
 		end,
 	})
 
@@ -505,9 +698,9 @@ function ConfigAddon.Setup(context)
 		task.defer(function()
 			local ok, err = loadConfig(currentAutoloadName, true)
 			if ok then
-				Notify("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
+				notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
 			else
-				Notify("Auto Load", "Failed: " .. tostring(err), "lucide:triangle-alert", 7)
+				notifySafe("Auto Load", "Failed: " .. tostring(err), "lucide:triangle-alert", 7)
 			end
 		end)
 	end
