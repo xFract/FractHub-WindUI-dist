@@ -310,6 +310,10 @@ function ConfigAddon.Setup(context)
 	end
 
 	local function getElementCallbackValue(element, payload)
+		if payload ~= nil and payload.value ~= nil then
+			return payload.value
+		end
+
 		if payload ~= nil and payload.Value ~= nil then
 			return payload.Value
 		end
