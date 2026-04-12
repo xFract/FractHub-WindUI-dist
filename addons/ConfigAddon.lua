@@ -337,6 +337,15 @@ function ConfigAddon.Setup(context)
 			return nil, transparency
 		end
 
+		if payloadType == "Dropdown" and element ~= nil and element.Value ~= nil then
+			if type(element.Value) == "table" then
+				local cloned = table.clone(element.Value)
+				return cloned
+			end
+
+			return element.Value
+		end
+
 		if payload ~= nil and payload.value ~= nil then
 			return payload.value
 		end
