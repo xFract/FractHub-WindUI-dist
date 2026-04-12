@@ -220,15 +220,6 @@ function ConfigAddon.Setup(context)
 			return false, "Config name is invalid."
 		end
 
-		local configPath, configErr = getConfigPath(configName)
-		if not configPath then
-			return false, configErr
-		end
-
-		if not safeIsFile(configPath) then
-			return false, "Config file does not exist."
-		end
-
 		local path, err = getAutoloadPath()
 		if not path then
 			return false, err
@@ -318,34 +309,7 @@ function ConfigAddon.Setup(context)
 		return ok, result
 	end
 
-	local function getCallbackArguments(element, payload)
-		local payloadType = type(payload) == "table" and payload.__type or (element and element.__type)
-		if payloadType == "Colorpicker" then
-			local colorValue = payload and payload.value
-			local transparency = payload and payload.transparency
-			if type(colorValue) == "string" then
-				local ok, color = pcall(Color3.fromHex, colorValue)
-				if ok then
-					return color, transparency
-				end
-			end
-
-			if element and element.Default then
-				return element.Default, transparency ~= nil and transparency or element.Transparency
-			end
-
-			return nil, transparency
-		end
-
-		if payloadType == "Dropdown" and element ~= nil and element.Value ~= nil then
-			if type(element.Value) == "table" then
-				local cloned = table.clone(element.Value)
-				return cloned
-			end
-
-			return element.Value
-		end
-
+	local function getElementCallbackValue(element, payload)
 		if payload ~= nil and payload.value ~= nil then
 			return payload.value
 		end
@@ -365,7 +329,8 @@ function ConfigAddon.Setup(context)
 		for _, entry in ipairs(entries) do
 			local element = TrackedElements[entry.Flag]
 			if element and type(element.Callback) == "function" then
-				local ok, err = pcall(element.Callback, getCallbackArguments(element, entry.Payload))
+				local callbackValue = getElementCallbackValue(element, entry.Payload)
+				local ok, err = pcall(element.Callback, callbackValue)
 				if not ok then
 					warn("[ConfigAddon] Failed to sync callback for " .. tostring(entry.Flag) .. ": " .. tostring(err))
 				end
@@ -460,47 +425,32 @@ function ConfigAddon.Setup(context)
 		return true
 	end
 
-	local function loadConfig(configName, silent, onComplete)
-		local function finish(success, result)
-			if type(onComplete) == "function" then
-				local callbackOk, callbackErr = pcall(onComplete, success, result)
-				if not callbackOk then
-					warn("[ConfigAddon] load completion callback failed: " .. tostring(callbackErr))
-				end
-			end
-		end
-
+	local function loadConfig(configName, silent)
 		if busy then
-			finish(false, "Config operation already in progress.")
 			return false, "Config operation already in progress."
 		end
 
 		local manager = getManager()
 		if not manager then
-			finish(false, "ConfigManager is unavailable.")
 			return false, "ConfigManager is unavailable."
 		end
 
 		configName = sanitizeConfigName(configName)
 		if not configName then
-			finish(false, "Config name is invalid.")
 			return false, "Config name is invalid."
 		end
 
 		local filePath, err = getConfigPath(configName)
 		if not filePath then
-			finish(false, err)
 			return false, err
 		end
 
 		if not safeIsFile(filePath) then
-			finish(false, "Config file does not exist.")
 			return false, "Config file does not exist."
 		end
 
 		local readOk, rawData = safeReadFile(filePath)
 		if not readOk then
-			finish(false, rawData)
 			return false, rawData
 		end
 
@@ -508,7 +458,6 @@ function ConfigAddon.Setup(context)
 			return HttpService:JSONDecode(rawData)
 		end)
 		if not decodeOk or type(decoded) ~= "table" then
-			finish(false, "Failed to parse config file.")
 			return false, "Failed to parse config file."
 		end
 
@@ -521,7 +470,6 @@ function ConfigAddon.Setup(context)
 		end
 
 		if decoded.__elements ~= nil and type(decoded.__elements) ~= "table" then
-			finish(false, "Config data is corrupted.")
 			return false, "Config data is corrupted."
 		end
 
@@ -567,7 +515,6 @@ function ConfigAddon.Setup(context)
 			busy = false
 
 			if not ok then
-				finish(false, loadErr)
 				notifySafe("Load Config", "Failed while applying config: " .. tostring(loadErr), "lucide:triangle-alert", 7)
 				return
 			end
@@ -576,9 +523,6 @@ function ConfigAddon.Setup(context)
 				local customOk, customErr = pcall(context.ApplyCustomData, decoded.__custom or {}, configName)
 				if not customOk then
 					warn("[ConfigAddon] Failed to apply custom data: " .. tostring(customErr))
-					finish(false, customErr)
-					notifySafe("Load Config", "Failed while applying custom data: " .. tostring(customErr), "lucide:triangle-alert", 7)
-					return
 				end
 			end
 
@@ -588,13 +532,8 @@ function ConfigAddon.Setup(context)
 				local afterLoadOk, afterLoadErr = pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
 				if not afterLoadOk then
 					warn("[ConfigAddon] OnAfterLoad failed: " .. tostring(afterLoadErr))
-					finish(false, afterLoadErr)
-					notifySafe("Load Config", "Failed after load: " .. tostring(afterLoadErr), "lucide:triangle-alert", 7)
-					return
 				end
 			end
-
-			finish(true, configName)
 
 			if not silent then
 				notifySafe("Load Config", "Loaded: " .. configName, "lucide:folder-open")
@@ -761,14 +700,10 @@ function ConfigAddon.Setup(context)
 
 	if currentAutoloadName then
 		task.defer(function()
-			local ok, err = loadConfig(currentAutoloadName, true, function(success, result)
-				if success then
-					notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
-				else
-					notifySafe("Auto Load", "Failed: " .. tostring(result), "lucide:triangle-alert", 7)
-				end
-			end)
-			if not ok then
+			local ok, err = loadConfig(currentAutoloadName, true)
+			if ok then
+				notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
+			else
 				notifySafe("Auto Load", "Failed: " .. tostring(err), "lucide:triangle-alert", 7)
 			end
 		end)
