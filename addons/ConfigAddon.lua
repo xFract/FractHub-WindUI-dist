@@ -14,15 +14,22 @@ function ConfigAddon.Setup(context)
 	local DefaultConfigName = context.DefaultConfigName or "default"
 	local LoadBatchSize = math.max(1, math.floor(tonumber(context.LoadBatchSize) or 12))
 	local LoadYieldDelay = math.max(0, tonumber(context.LoadYieldDelay) or 0)
+	local IgnoreFlags = type(context.IgnoreFlags) == "table" and context.IgnoreFlags or {}
+	local IgnoreThemeSettings = context.IgnoreThemeSettings == true
+	local CustomPath = context.Path or context.BasePath
 
 	local activeConfigName = type(DefaultConfigName) == "string" and DefaultConfigName or "default"
+	local activeSubFolder = nil
 	local currentAutoloadName = nil
 	local busy = false
+	local parserCache = {}
+	local ignoredFlags = {}
 
 	local configNameInput
 	local configFileDropdown
 	local autoloadButton
 	local getConfigName
+	local sanitizeConfigName
 
 	local function notifySafe(...)
 		local ok, err = pcall(Notify, ...)
@@ -36,6 +43,7 @@ function ConfigAddon.Setup(context)
 			return nil
 		end
 
+		path = path:gsub("\\", "/")
 		if not path:match("[/\\]$") then
 			path = path .. "/"
 		end
@@ -43,7 +51,71 @@ function ConfigAddon.Setup(context)
 		return path
 	end
 
-	local function sanitizeConfigName(value)
+	local function sanitizePathSegment(value)
+		value = sanitizeConfigName(value)
+		if not value then
+			return nil
+		end
+
+		return value:gsub("%s+", " ")
+	end
+
+	local function sanitizeSubFolder(value)
+		if type(value) ~= "string" then
+			return nil
+		end
+
+		local normalized = value:gsub("\\", "/"):gsub("^%s+", ""):gsub("%s+$", "")
+		if normalized == "" then
+			return nil
+		end
+
+		local parts = {}
+		for segment in normalized:gmatch("[^/]+") do
+			local cleanSegment = sanitizePathSegment(segment)
+			if cleanSegment then
+				parts[#parts + 1] = cleanSegment
+			end
+		end
+
+		if #parts == 0 then
+			return nil
+		end
+
+		return table.concat(parts, "/")
+	end
+
+	local function setIgnoredFlags(list)
+		table.clear(ignoredFlags)
+
+		if type(list) ~= "table" then
+			return
+		end
+
+		for _, flag in ipairs(list) do
+			if type(flag) == "string" and flag ~= "" then
+				ignoredFlags[flag] = true
+			end
+		end
+	end
+
+	local function ignoreDefaultThemeSettings()
+		for _, flag in ipairs({
+			"BackgroundColor",
+			"MainColor",
+			"AccentColor",
+			"OutlineColor",
+			"FontColor",
+			"FontFace",
+			"ThemeManager_ThemeList",
+			"ThemeManager_CustomThemeList",
+			"ThemeManager_CustomThemeName",
+		}) do
+			ignoredFlags[flag] = true
+		end
+	end
+
+	sanitizeConfigName = function(value)
 		if type(value) ~= "string" then
 			return nil
 		end
@@ -143,10 +215,72 @@ function ConfigAddon.Setup(context)
 
 	local function getBasePath()
 		local manager = getManager()
+		local rootPath = CustomPath
 		if manager and manager.Path then
-			return normalizeDirectoryPath(manager.Path)
+			rootPath = manager.Path
 		end
-		return nil
+
+		rootPath = normalizeDirectoryPath(rootPath)
+		if not rootPath then
+			return nil
+		end
+
+		if activeSubFolder then
+			rootPath = normalizeDirectoryPath(rootPath .. activeSubFolder)
+		end
+
+		return rootPath
+	end
+
+	local function buildFolderTree(path)
+		path = normalizeDirectoryPath(path)
+		if not path then
+			return false, "Config path is unavailable."
+		end
+
+		if not (isfolder and makefolder) then
+			return true
+		end
+
+		local trimmedPath = path:gsub("[/\\]+$", "")
+		local normalized = trimmedPath:gsub("\\", "/")
+		local prefix = ""
+		local segments = {}
+
+		if normalized:match("^[A-Za-z]:/") then
+			prefix = normalized:sub(1, 3)
+			normalized = normalized:sub(4)
+		elseif normalized:sub(1, 1) == "/" then
+			prefix = "/"
+			normalized = normalized:sub(2)
+		end
+
+		for segment in normalized:gmatch("[^/]+") do
+			segments[#segments + 1] = segment
+		end
+
+		local currentPath = prefix
+		for _, segment in ipairs(segments) do
+			if currentPath == "" or currentPath:sub(-1) == "/" then
+				currentPath = currentPath .. segment
+			else
+				currentPath = currentPath .. "/" .. segment
+			end
+
+			local folderOk, exists = pcall(isfolder, currentPath)
+			if not folderOk then
+				return false, "Failed to query config path."
+			end
+
+			if not exists then
+				local createOk, createErr = pcall(makefolder, currentPath)
+				if not createOk then
+					return false, tostring(createErr)
+				end
+			end
+		end
+
+		return true
 	end
 
 	local function ensureBasePath()
@@ -155,18 +289,9 @@ function ConfigAddon.Setup(context)
 			return nil, "Config path is unavailable."
 		end
 
-		if isfolder and makefolder then
-			local folderOk, exists = pcall(isfolder, path)
-			if not folderOk then
-				return nil, "Failed to query config path."
-			end
-
-			if not exists then
-				local createOk, createErr = pcall(makefolder, path)
-				if not createOk then
-					return nil, tostring(createErr)
-				end
-			end
+		local ok, err = buildFolderTree(path)
+		if not ok then
+			return nil, err
 		end
 
 		return path
@@ -290,10 +415,25 @@ function ConfigAddon.Setup(context)
 		return files
 	end
 
-	local function suppressCallbacks(callback)
+	local function getParserForType(manager, parserType)
+		if type(parserType) ~= "string" or parserType == "" then
+			return nil
+		end
+
+		local cachedParser = parserCache[parserType]
+		if cachedParser ~= nil then
+			return cachedParser or nil
+		end
+
+		local parser = manager and manager.Parser and manager.Parser[parserType]
+		parserCache[parserType] = parser or false
+		return parser
+	end
+
+	local function suppressCallbacks(elements, callback)
 		local originals = {}
 
-		for _, element in pairs(TrackedElements) do
+		for _, element in ipairs(elements) do
 			if element and element.Callback ~= nil then
 				originals[element] = element.Callback
 				element.Callback = function() end
@@ -325,9 +465,50 @@ function ConfigAddon.Setup(context)
 		return nil
 	end
 
+	local function areValuesEqual(left, right)
+		if left == right then
+			return true
+		end
+
+		if type(left) ~= type(right) then
+			return false
+		end
+
+		if type(left) ~= "table" then
+			return false
+		end
+
+		for key, value in pairs(left) do
+			if not areValuesEqual(value, right[key]) then
+				return false
+			end
+		end
+
+		for key in pairs(right) do
+			if left[key] == nil then
+				return false
+			end
+		end
+
+		return true
+	end
+
+	local function captureElementState(parser, element)
+		if not (parser and parser.Save and element) then
+			return nil
+		end
+
+		local ok, state = pcall(parser.Save, element)
+		if not ok then
+			return nil
+		end
+
+		return state
+	end
+
 	local function syncTrackedCallbacks(entries)
 		for _, entry in ipairs(entries) do
-			local element = TrackedElements[entry.Flag]
+			local element = entry.Element
 			if element and type(element.Callback) == "function" then
 				local callbackValue = getElementCallbackValue(element, entry.Payload)
 				local ok, err = pcall(element.Callback, callbackValue)
@@ -365,7 +546,11 @@ function ConfigAddon.Setup(context)
 		}
 
 		for flag, element in pairs(TrackedElements) do
-			local parser = element and manager.Parser and manager.Parser[element.__type]
+			if ignoredFlags[flag] then
+				continue
+			end
+
+			local parser = element and getParserForType(manager, element.__type)
 			if parser and parser.Save then
 				local ok, result = pcall(parser.Save, element)
 				if ok and result then
@@ -478,35 +663,58 @@ function ConfigAddon.Setup(context)
 		end
 
 		local entries = {}
+		local callbackElements = {}
 		for flag, payload in pairs(decoded.__elements or {}) do
-			table.insert(entries, { Flag = flag, Payload = payload })
+			if ignoredFlags[flag] then
+				continue
+			end
+
+			local element = TrackedElements[flag]
+			local normalizedPayload = type(payload) == "table" and payload or nil
+			local parserType = normalizedPayload and normalizedPayload.__type
+			local parser = element and parserType and getParserForType(manager, parserType)
+
+			table.insert(entries, {
+				Flag = flag,
+				Payload = payload,
+				Element = element,
+				Parser = parser,
+				ValidPayload = normalizedPayload,
+			})
+
+			if element and parser and normalizedPayload and element.Callback ~= nil then
+				callbackElements[#callbackElements + 1] = element
+			end
 		end
-		table.sort(entries, function(a, b)
-			return tostring(a.Flag) < tostring(b.Flag)
-		end)
 
 		activeConfigName = configName
 		refreshConfigFiles(configName)
 		busy = true
 
-		task.spawn(function()
-			local ok, loadErr = suppressCallbacks(function()
+			task.spawn(function()
+			local changedEntries = {}
+			local ok, loadErr = suppressCallbacks(callbackElements, function()
 				for index, entry in ipairs(entries) do
-					local element = TrackedElements[entry.Flag]
-					local payload = type(entry.Payload) == "table" and entry.Payload or nil
-					local parserType = payload and payload.__type
-					local parser = element and parserType and manager.Parser and manager.Parser[parserType]
+					local element = entry.Element
+					local payload = entry.ValidPayload
+					local parser = entry.Parser
 
 					if element and parser and parser.Load and payload then
+						local previousState = captureElementState(parser, element)
 						local applyOk, applyErr = pcall(parser.Load, element, payload)
 						if not applyOk then
 							warn("[ConfigAddon] Failed to load " .. tostring(entry.Flag) .. ": " .. tostring(applyErr))
+						else
+							local currentState = captureElementState(parser, element)
+							if not areValuesEqual(previousState, currentState) then
+								changedEntries[#changedEntries + 1] = entry
+							end
 						end
 					elseif element and entry.Payload ~= nil and not payload then
 						warn("[ConfigAddon] Skipped invalid payload for " .. tostring(entry.Flag))
 					end
 
-					if index % LoadBatchSize == 0 then
+					if LoadYieldDelay > 0 and index % LoadBatchSize == 0 then
 						task.wait(LoadYieldDelay)
 					end
 				end
@@ -526,7 +734,7 @@ function ConfigAddon.Setup(context)
 				end
 			end
 
-			syncTrackedCallbacks(entries)
+			syncTrackedCallbacks(changedEntries)
 
 			if context.OnAfterLoad then
 				local afterLoadOk, afterLoadErr = pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
@@ -695,6 +903,19 @@ function ConfigAddon.Setup(context)
 		end,
 	})
 
+	local function setSubFolder(folder)
+		activeSubFolder = sanitizeSubFolder(folder)
+		currentAutoloadName = readAutoload()
+		refreshConfigFiles()
+		return activeSubFolder
+	end
+
+	setIgnoredFlags(IgnoreFlags)
+	if IgnoreThemeSettings then
+		ignoreDefaultThemeSettings()
+	end
+	setSubFolder(context.SubFolder)
+
 	currentAutoloadName = readAutoload()
 	refreshConfigFiles()
 
@@ -715,6 +936,43 @@ function ConfigAddon.Setup(context)
 		end,
 		GetAutoloadName = function()
 			return currentAutoloadName
+		end,
+		GetPath = function()
+			return getBasePath()
+		end,
+		GetSubFolder = function()
+			return activeSubFolder
+		end,
+		SetSubFolder = function(folder)
+			return setSubFolder(folder)
+		end,
+		SetIgnoreFlags = function(list)
+			setIgnoredFlags(list)
+			refreshConfigFiles(activeConfigName)
+		end,
+		IgnoreThemeSettings = function()
+			ignoreDefaultThemeSettings()
+			refreshConfigFiles(activeConfigName)
+		end,
+		Save = function(configName, failIfExists)
+			return saveConfig(configName, failIfExists)
+		end,
+		Load = function(configName, silent)
+			return loadConfig(configName, silent)
+		end,
+		Delete = function(configName)
+			return deleteConfig(configName)
+		end,
+		SetAutoload = function(configName)
+			local ok, err = writeAutoload(configName)
+			if ok then
+				refreshAutoloadButton()
+			end
+			return ok, err
+		end,
+		ClearAutoload = function()
+			clearAutoload()
+			refreshAutoloadButton()
 		end,
 		Refresh = refreshConfigFiles,
 	}
