@@ -1,251 +1,96 @@
 local HttpService = game:GetService("HttpService")
 
-local ConfigAddon = {}
+local LightConfigAddon = {}
 
-function ConfigAddon.Setup(context)
+function LightConfigAddon.Setup(context)
 	context = type(context) == "table" and context or {}
 
 	local Window = context.Window
 	local Tab = context.Tab
-	local Notify = type(context.Notify) == "function" and context.Notify or function(title, message)
-		warn("[ConfigAddon] " .. tostring(title) .. ": " .. tostring(message))
-	end
-	local TrackedElements = context.TrackedElements or {}
+	local TrackedElements = type(context.TrackedElements) == "table" and context.TrackedElements or {}
 	local DefaultConfigName = context.DefaultConfigName or "default"
-	local LoadBatchSize = math.max(1, math.floor(tonumber(context.LoadBatchSize) or 12))
-	local LoadYieldDelay = math.max(0, tonumber(context.LoadYieldDelay) or 0)
-	local IgnoreFlags = type(context.IgnoreFlags) == "table" and context.IgnoreFlags or {}
-	local IgnoreThemeSettings = context.IgnoreThemeSettings == true
-	local CustomPath = context.Path or context.BasePath
+	local Notify = type(context.Notify) == "function" and context.Notify or function(title, message)
+		warn("[LightConfigAddon] " .. tostring(title) .. ": " .. tostring(message))
+	end
 
 	local activeConfigName = type(DefaultConfigName) == "string" and DefaultConfigName or "default"
-	local activeSubFolder = nil
 	local currentAutoloadName = nil
-	local busy = false
-	local parserCache = {}
-	local ignoredFlags = {}
-
 	local configNameInput
-	local configFileDropdown
+	local configDropdown
 	local autoloadButton
-	local getConfigName
-	local sanitizeConfigName
 
 	local function notifySafe(...)
 		local ok, err = pcall(Notify, ...)
 		if not ok then
-			warn("[ConfigAddon] Notify failed: " .. tostring(err))
+			warn("[LightConfigAddon] Notify failed: " .. tostring(err))
 		end
 	end
 
-	local function normalizeDirectoryPath(path)
-		if type(path) ~= "string" or path == "" then
-			return nil
-		end
-
-		path = path:gsub("\\", "/")
-		if not path:match("[/\\]$") then
-			path = path .. "/"
-		end
-
-		return path
-	end
-
-	local function sanitizePathSegment(value)
-		value = sanitizeConfigName(value)
-		if not value then
-			return nil
-		end
-
-		return value:gsub("%s+", " ")
-	end
-
-	local function sanitizeSubFolder(value)
-		if type(value) ~= "string" then
-			return nil
-		end
-
-		local normalized = value:gsub("\\", "/"):gsub("^%s+", ""):gsub("%s+$", "")
-		if normalized == "" then
-			return nil
-		end
-
-		local parts = {}
-		for segment in normalized:gmatch("[^/]+") do
-			local cleanSegment = sanitizePathSegment(segment)
-			if cleanSegment then
-				parts[#parts + 1] = cleanSegment
-			end
-		end
-
-		if #parts == 0 then
-			return nil
-		end
-
-		return table.concat(parts, "/")
-	end
-
-	local function setIgnoredFlags(list)
-		table.clear(ignoredFlags)
-
-		if type(list) ~= "table" then
-			return
-		end
-
-		for _, flag in ipairs(list) do
-			if type(flag) == "string" and flag ~= "" then
-				ignoredFlags[flag] = true
-			end
-		end
-	end
-
-	local function ignoreDefaultThemeSettings()
-		for _, flag in ipairs({
-			"BackgroundColor",
-			"MainColor",
-			"AccentColor",
-			"OutlineColor",
-			"FontColor",
-			"FontFace",
-			"ThemeManager_ThemeList",
-			"ThemeManager_CustomThemeList",
-			"ThemeManager_CustomThemeName",
-		}) do
-			ignoredFlags[flag] = true
-		end
-	end
-
-	sanitizeConfigName = function(value)
+	local function sanitizeName(value)
 		if type(value) ~= "string" then
 			return nil
 		end
 
 		value = value:gsub("^%s+", ""):gsub("%s+$", "")
 		value = value:gsub("[<>:\"/\\|%?%*%c]", "_")
-		value = value:gsub("%.+$", "")
-		value = value:gsub("^%.+", "")
-		value = value:gsub("%s+$", "")
+		value = value:gsub("^%.+", ""):gsub("%.+$", "")
 
 		if value == "" then
 			return nil
 		end
 
-		if #value > 64 then
-			value = value:sub(1, 64)
-		end
-
-		return value
+		return value:sub(1, 64)
 	end
 
-	local function getSelectedConfigName()
-		local normalized = sanitizeConfigName(getConfigName and getConfigName() or activeConfigName)
-		if normalized then
-			return normalized
-		end
-
-		return sanitizeConfigName(activeConfigName) or sanitizeConfigName(DefaultConfigName) or "default"
-	end
-
-	local function safeIsFile(path)
-		if not path or not isfile then
-			return false
-		end
-
-		local ok, result = pcall(isfile, path)
-		return ok and result == true
-	end
-
-	local function safeReadFile(path)
-		if not path or not readfile then
-			return false, "readfile is unavailable."
-		end
-
-		local ok, result = pcall(readfile, path)
-		if not ok then
-			return false, tostring(result)
-		end
-
-		return true, result
-	end
-
-	local function safeWriteFile(path, content)
-		if not path or not writefile then
-			return false, "writefile is unavailable."
-		end
-
-		local ok, result = pcall(writefile, path, content)
-		if not ok then
-			return false, tostring(result)
-		end
-
-		return true
-	end
-
-	local function safeDeleteFile(path)
-		if not path or not delfile then
-			return false, "delfile is unavailable."
-		end
-
-		local ok, result = pcall(delfile, path)
-		if not ok then
-			return false, tostring(result)
-		end
-
-		return true
-	end
-
-	if not Window or not Tab then
-		warn("[ConfigAddon] Setup requires both Window and Tab.")
-		return {
-			GetActiveName = function()
-				return activeConfigName
-			end,
-			GetAutoloadName = function()
-				return nil
-			end,
-			Refresh = function()
-				return {}
-			end,
-		}
+	local function getSelectedName()
+		local inputValue = configNameInput and configNameInput.Value or activeConfigName
+		return sanitizeName(inputValue) or sanitizeName(activeConfigName) or "default"
 	end
 
 	local function getManager()
 		return Window and Window.ConfigManager or nil
 	end
 
+	local cachedBasePath = nil
+	local folderVerified = false
+
 	local function getBasePath()
-		local manager = getManager()
-		local rootPath = CustomPath
-		if manager and manager.Path then
-			rootPath = manager.Path
+		if cachedBasePath then
+			return cachedBasePath
 		end
 
-		rootPath = normalizeDirectoryPath(rootPath)
-		if not rootPath then
+		local manager = getManager()
+		local path = manager and manager.Path
+		if type(path) ~= "string" or path == "" then
 			return nil
 		end
 
-		if activeSubFolder then
-			rootPath = normalizeDirectoryPath(rootPath .. activeSubFolder)
+		path = path:gsub("\\", "/")
+		if not path:match("/$") then
+			path = path .. "/"
 		end
 
-		return rootPath
+		cachedBasePath = path
+		return path
 	end
 
-	local function buildFolderTree(path)
-		path = normalizeDirectoryPath(path)
+	local function ensureFolder(path)
+		if folderVerified then
+			return true
+		end
+
 		if not path then
 			return false, "Config path is unavailable."
 		end
 
 		if not (isfolder and makefolder) then
+			folderVerified = true
 			return true
 		end
 
-		local trimmedPath = path:gsub("[/\\]+$", "")
-		local normalized = trimmedPath:gsub("\\", "/")
+		local normalized = path:gsub("\\", "/"):gsub("/+$", "")
 		local prefix = ""
-		local segments = {}
+		local parts = {}
 
 		if normalized:match("^[A-Za-z]:/") then
 			prefix = normalized:sub(1, 3)
@@ -255,107 +100,236 @@ function ConfigAddon.Setup(context)
 			normalized = normalized:sub(2)
 		end
 
-		for segment in normalized:gmatch("[^/]+") do
-			segments[#segments + 1] = segment
+		for part in normalized:gmatch("[^/]+") do
+			parts[#parts + 1] = part
 		end
 
-		local currentPath = prefix
-		for _, segment in ipairs(segments) do
-			if currentPath == "" or currentPath:sub(-1) == "/" then
-				currentPath = currentPath .. segment
+		local current = prefix
+		for _, part in ipairs(parts) do
+			if current == "" or current:sub(-1) == "/" then
+				current = current .. part
 			else
-				currentPath = currentPath .. "/" .. segment
+				current = current .. "/" .. part
 			end
 
-			local folderOk, exists = pcall(isfolder, currentPath)
-			if not folderOk then
-				return false, "Failed to query config path."
-			end
-
-			if not exists then
-				local createOk, createErr = pcall(makefolder, currentPath)
-				if not createOk then
-					return false, tostring(createErr)
-				end
+			if not isfolder(current) then
+				makefolder(current)
 			end
 		end
 
+		folderVerified = true
 		return true
 	end
 
-	local function ensureBasePath()
-		local path = getBasePath()
-		if not path then
+	-- Read-only path resolution: skips ensureFolder (folder must already exist for reads)
+	local function getConfigPathRead(name)
+		name = sanitizeName(name)
+		if not name then
+			return nil, "Config name is invalid."
+		end
+
+		local basePath = getBasePath()
+		if not basePath then
 			return nil, "Config path is unavailable."
 		end
 
-		local ok, err = buildFolderTree(path)
-		if not ok then
+		return basePath .. name .. ".json"
+	end
+
+	-- Write path resolution: ensures folder exists before returning
+	local function getConfigPath(name)
+		local path, err = getConfigPathRead(name)
+		if not path then
 			return nil, err
+		end
+
+		local ok, folderErr = ensureFolder(getBasePath())
+		if not ok then
+			return nil, folderErr
 		end
 
 		return path
 	end
 
-	local function getConfigPath(configName)
-		configName = sanitizeConfigName(configName)
-		if not configName then
-			return nil, "Config name is invalid."
-		end
-
-		local path, err = ensureBasePath()
-		if not path then
-			return nil, err
-		end
-
-		return path .. configName .. ".json"
-	end
-
 	local function getAutoloadPath()
-		local path, err = ensureBasePath()
-		if not path then
+		local basePath = getBasePath()
+		if not basePath then
+			return nil, "Config path is unavailable."
+		end
+
+		local ok, err = ensureFolder(basePath)
+		if not ok then
 			return nil, err
 		end
 
-		return path .. "autoload.txt"
+		return basePath .. "autoload.txt"
 	end
 
-	getConfigName = function()
-		local value = configNameInput and configNameInput.Value or activeConfigName
-		return sanitizeConfigName(value) or sanitizeConfigName(activeConfigName) or sanitizeConfigName(DefaultConfigName) or "default"
+	-- Lightweight parser: skips Tween animations during restore, Callbacks still fire for state sync
+	local LightParser = {
+		Toggle = {
+			Save = function(el)
+				return { __type = "Toggle", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value, nil, true) -- isCallback=nil(→true), isAnim=true (instant position, no Tween)
+				end
+			end,
+		},
+		Dropdown = {
+			Save = function(el)
+				return { __type = "Dropdown", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Select then
+					el:Select(data.value) -- triggers Refresh + Callback for state sync
+				end
+			end,
+		},
+		Input = {
+			Save = function(el)
+				return { __type = "Input", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value)
+				end
+			end,
+		},
+		Slider = {
+			Save = function(el)
+				return { __type = "Slider", value = el.Value and el.Value.Default or nil }
+			end,
+			Load = function(el, data)
+				if el and el.Set and data.value then
+					el:Set(tonumber(data.value))
+				end
+			end,
+		},
+		Keybind = {
+			Save = function(el)
+				return { __type = "Keybind", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value)
+				end
+			end,
+		},
+		Colorpicker = {
+			Save = function(el)
+				return {
+					__type = "Colorpicker",
+					value = el.Default and el.Default:ToHex() or "FFFFFF",
+					transparency = el.Transparency or nil,
+				}
+			end,
+			Load = function(el, data)
+				if el and el.Update and data.value then
+					el:Update(Color3.fromHex(data.value), data.transparency or nil)
+				end
+			end,
+		},
+	}
+
+	local function getParser(element)
+		if not element or not element.__type then
+			return nil
+		end
+
+		-- Use lightweight parser first, fall back to ConfigManager parser
+		if LightParser[element.__type] then
+			return LightParser[element.__type]
+		end
+
+		local manager = getManager()
+		if not manager or not manager.Parser then
+			return nil
+		end
+
+		return manager.Parser[element.__type]
+	end
+
+	local function listConfigs()
+		local basePath = getBasePath()
+		if not basePath or not listfiles then
+			return {}
+		end
+
+		local ok, files = pcall(listfiles, basePath)
+		if not ok or type(files) ~= "table" then
+			return {}
+		end
+
+		local result = {}
+		for _, file in ipairs(files) do
+			local name = file:match("([^\\/]+)%.json$")
+			if name then
+				result[#result + 1] = name
+			end
+		end
+
+		table.sort(result)
+		return result
+	end
+
+	-- Lightweight UI update: only updates button desc without re-listing files
+	local function updateConfigUI()
+		if autoloadButton and autoloadButton.SetDesc then
+			autoloadButton:SetDesc(
+				"Current: " .. tostring(currentAutoloadName or "none") .. " | Selected: " .. tostring(getSelectedName())
+			)
+		end
+	end
+
+	local function refreshList(selectName)
+		local names = listConfigs()
+		if configDropdown and configDropdown.Refresh then
+			configDropdown:Refresh(names)
+		end
+
+		if selectName and configDropdown and configDropdown.Select then
+			configDropdown:Select(selectName)
+		end
+
+		updateConfigUI()
+
+		return names
 	end
 
 	local function readAutoload()
 		local path = getAutoloadPath()
-		if not path or not safeIsFile(path) then
+		if not path or not isfile or not isfile(path) then
 			return nil
 		end
 
-		local ok, value = safeReadFile(path)
-		if not ok or type(value) ~= "string" then
+		local ok, content = pcall(readfile, path)
+		if not ok or type(content) ~= "string" then
 			return nil
 		end
 
-		return sanitizeConfigName(value)
+		return sanitizeName(content)
 	end
 
-	local function writeAutoload(configName)
-		configName = sanitizeConfigName(configName)
-		if not configName then
-			return false, "Config name is invalid."
-		end
-
+	local function writeAutoload(name)
 		local path, err = getAutoloadPath()
 		if not path then
 			return false, err
 		end
 
-		local ok, writeErr = safeWriteFile(path, configName)
-		if not ok then
-			return false, writeErr
+		name = sanitizeName(name)
+		if not name then
+			return false, "Config name is invalid."
 		end
 
-		currentAutoloadName = configName
+		local ok, writeErr = pcall(writefile, path, name)
+		if not ok then
+			return false, tostring(writeErr)
+		end
+
+		currentAutoloadName = name
+		refreshList(activeConfigName)
 		return true
 	end
 
@@ -363,456 +337,197 @@ function ConfigAddon.Setup(context)
 		local path = getAutoloadPath()
 		currentAutoloadName = nil
 
-		if path and safeIsFile(path) then
-			safeDeleteFile(path)
+		if path and isfile and isfile(path) and delfile then
+			pcall(delfile, path)
 		end
+
+		refreshList(activeConfigName)
 	end
 
-	local function refreshAutoloadButton()
-		if not autoloadButton then
-			return
-		end
-
-		local current = currentAutoloadName or "none"
-		local selected = getConfigName()
-		autoloadButton:SetDesc("Current: " .. current .. " | Selected: " .. selected)
-	end
-
-	local function getConfigFiles()
-		local path = getBasePath()
-		if not path or not listfiles then
-			return {}
-		end
-
-		local ok, listedFiles = pcall(listfiles, path)
-		if not ok or type(listedFiles) ~= "table" then
-			return {}
-		end
-
-		local files = {}
-		for _, file in next, listedFiles do
-			local name = file:match("([^\\/]+)%.json$")
-			if name then
-				table.insert(files, name)
-			end
-		end
-
-		table.sort(files)
-		return files
-	end
-
-	local function refreshConfigFiles(selectName)
-		local files = getConfigFiles()
-		if configFileDropdown and configFileDropdown.Refresh then
-			configFileDropdown:Refresh(files)
-		end
-
-		if selectName and configFileDropdown and configFileDropdown.Select then
-			configFileDropdown:Select(selectName)
-		end
-
-		refreshAutoloadButton()
-		return files
-	end
-
-	local function getParserForType(manager, parserType)
-		if type(parserType) ~= "string" or parserType == "" then
-			return nil
-		end
-
-		local cachedParser = parserCache[parserType]
-		if cachedParser ~= nil then
-			return cachedParser or nil
-		end
-
-		local parser = manager and manager.Parser and manager.Parser[parserType]
-		parserCache[parserType] = parser or false
-		return parser
-	end
-
-	local function suppressCallbacks(elements, callback)
-		local originals = {}
-
-		for _, element in ipairs(elements) do
-			if element and element.Callback ~= nil then
-				originals[element] = element.Callback
-				element.Callback = function() end
-			end
-		end
-
-		local ok, result = pcall(callback)
-
-		for element, original in pairs(originals) do
-			element.Callback = original
-		end
-
-		return ok, result
-	end
-
-	local function getElementCallbackValue(element, payload)
-		if payload ~= nil and payload.value ~= nil then
-			return payload.value
-		end
-
-		if payload ~= nil and payload.Value ~= nil then
-			return payload.Value
-		end
-
-		if element ~= nil and element.Value ~= nil then
-			return element.Value
-		end
-
-		return nil
-	end
-
-	local function areValuesEqual(left, right)
-		if left == right then
-			return true
-		end
-
-		if type(left) ~= type(right) then
-			return false
-		end
-
-		if type(left) ~= "table" then
-			return false
-		end
-
-		for key, value in pairs(left) do
-			if not areValuesEqual(value, right[key]) then
-				return false
-			end
-		end
-
-		for key in pairs(right) do
-			if left[key] == nil then
-				return false
-			end
-		end
-
-		return true
-	end
-
-	local function captureElementState(parser, element)
-		if not (parser and parser.Save and element) then
-			return nil
-		end
-
-		local ok, state = pcall(parser.Save, element)
-		if not ok then
-			return nil
-		end
-
-		return state
-	end
-
-	local function syncTrackedCallbacks(entries)
-		for _, entry in ipairs(entries) do
-			local element = entry.Element
-			if element and type(element.Callback) == "function" then
-				local callbackValue = getElementCallbackValue(element, entry.Payload)
-				local ok, err = pcall(element.Callback, callbackValue)
-				if not ok then
-					warn("[ConfigAddon] Failed to sync callback for " .. tostring(entry.Flag) .. ": " .. tostring(err))
-				end
-			end
-		end
-	end
-
-	local function buildSaveData()
-		local manager = getManager()
-		if not manager then
-			return nil, "ConfigManager is unavailable."
-		end
-
-		local customData = {}
-		if context.BuildCustomData then
-			local customOk, customResult = pcall(context.BuildCustomData)
-			if not customOk then
-				return nil, "Failed to build custom config data."
-			end
-
-			if customResult ~= nil and type(customResult) ~= "table" then
-				return nil, "Custom config data must be a table."
-			end
-
-			customData = customResult or {}
-		end
-
-		local data = {
-			__version = 1,
-			__elements = {},
-			__custom = customData,
-		}
-
-		for flag, element in pairs(TrackedElements) do
-			if ignoredFlags[flag] then
-				continue
-			end
-
-			local parser = element and getParserForType(manager, element.__type)
-			if parser and parser.Save then
-				local ok, result = pcall(parser.Save, element)
-				if ok and result then
-					data.__elements[flag] = result
-				elseif not ok then
-					warn("[ConfigAddon] Failed to save " .. tostring(flag) .. ": " .. tostring(result))
-				end
-			end
-		end
-
-		return data
-	end
-
-	local function saveConfig(configName, failIfExists)
-		if busy then
-			return false, "Config operation already in progress."
-		end
-
-		configName = sanitizeConfigName(configName)
-		if not configName then
-			return false, "Config name is invalid."
-		end
-
-		local filePath, err = getConfigPath(configName)
-		if not filePath then
+	local function saveConfig(name)
+		local path, err = getConfigPath(name)
+		if not path then
 			return false, err
 		end
 
-		if failIfExists and safeIsFile(filePath) then
-			return false, "Config already exists."
-		end
-
-		local saveData, buildErr = buildSaveData()
-		if not saveData then
-			return false, buildErr
+		local payload = {}
+		for flag, element in pairs(TrackedElements) do
+			local parser = getParser(element)
+			if parser and parser.Save then
+				local ok, state = pcall(parser.Save, element)
+				if ok and state ~= nil then
+					payload[flag] = state
+				end
+			end
 		end
 
 		local ok, encoded = pcall(function()
-			return HttpService:JSONEncode(saveData)
+			return HttpService:JSONEncode(payload)
 		end)
 		if not ok then
-			return false, tostring(encoded)
+			return false, "Failed to encode config."
 		end
 
-		busy = true
-		local writeOk, writeErr = safeWriteFile(filePath, encoded)
-		busy = false
+		local writeOk, writeErr = pcall(writefile, path, encoded)
 		if not writeOk then
-			return false, writeErr
+			return false, tostring(writeErr)
 		end
 
-		activeConfigName = configName
+		activeConfigName = sanitizeName(name) or activeConfigName
 		if configNameInput and configNameInput.Set then
-			configNameInput:Set(configName)
+			configNameInput:Set(activeConfigName)
 		end
-		refreshConfigFiles(configName)
+		refreshList(activeConfigName)
 		return true
 	end
 
-	local function loadConfig(configName, silent)
-		if busy then
-			return false, "Config operation already in progress."
-		end
+	local LOAD_BATCH_LIGHT = 3 -- lightweight elements (Toggle, Input, Slider, Keybind) per frame
+	local LOAD_BATCH_HEAVY = 1 -- heavy elements (Dropdown, Colorpicker) per frame
 
-		local manager = getManager()
-		if not manager then
-			return false, "ConfigManager is unavailable."
-		end
+	local HEAVY_TYPES = { Dropdown = true, Colorpicker = true }
 
-		configName = sanitizeConfigName(configName)
-		if not configName then
-			return false, "Config name is invalid."
-		end
-
-		local filePath, err = getConfigPath(configName)
-		if not filePath then
+	local function loadConfig(name)
+		local path, err = getConfigPathRead(name)
+		if not path then
 			return false, err
 		end
 
-		if not safeIsFile(filePath) then
+		if not isfile or not isfile(path) then
 			return false, "Config file does not exist."
 		end
 
-		local readOk, rawData = safeReadFile(filePath)
+		local readOk, content = pcall(readfile, path)
 		if not readOk then
-			return false, rawData
+			return false, tostring(content)
 		end
 
 		local decodeOk, decoded = pcall(function()
-			return HttpService:JSONDecode(rawData)
+			return HttpService:JSONDecode(content)
 		end)
 		if not decodeOk or type(decoded) ~= "table" then
 			return false, "Failed to parse config file."
 		end
 
-		if decoded.__version == nil and decoded.__elements == nil then
-			decoded = {
-				__version = 0,
-				__elements = decoded,
-				__custom = {},
-			}
-		end
-
-		if decoded.__elements ~= nil and type(decoded.__elements) ~= "table" then
-			return false, "Config data is corrupted."
-		end
-
-		if decoded.__custom ~= nil and type(decoded.__custom) ~= "table" then
-			decoded.__custom = {}
-		end
-
-		local entries = {}
-		local callbackElements = {}
-		for flag, payload in pairs(decoded.__elements or {}) do
-			if ignoredFlags[flag] then
-				continue
-			end
-
+		-- Separate lightweight and heavy elements for optimal batching
+		local lightEntries = {}
+		local heavyEntries = {}
+		for flag, savedState in pairs(decoded) do
 			local element = TrackedElements[flag]
-			local normalizedPayload = type(payload) == "table" and payload or nil
-			local parserType = normalizedPayload and normalizedPayload.__type
-			local parser = element and parserType and getParserForType(manager, parserType)
-
-			table.insert(entries, {
-				Flag = flag,
-				Payload = payload,
-				Element = element,
-				Parser = parser,
-				ValidPayload = normalizedPayload,
-			})
-
-			if element and parser and normalizedPayload and element.Callback ~= nil then
-				callbackElements[#callbackElements + 1] = element
+			local parser = getParser(element)
+			if element and parser and parser.Load and type(savedState) == "table" then
+				local entry = { element, parser, savedState, flag }
+				if HEAVY_TYPES[element.__type] then
+					heavyEntries[#heavyEntries + 1] = entry
+				else
+					lightEntries[#lightEntries + 1] = entry
+				end
 			end
 		end
 
-		activeConfigName = configName
-		refreshConfigFiles(configName)
-		busy = true
-
+		-- Frame-distributed restore: process light elements first, then heavy ones
+		local totalEntries = #lightEntries + #heavyEntries
+		if totalEntries > 0 then
 			task.spawn(function()
-			local changedEntries = {}
-			local ok, loadErr = suppressCallbacks(callbackElements, function()
-				for index, entry in ipairs(entries) do
-					local element = entry.Element
-					local payload = entry.ValidPayload
-					local parser = entry.Parser
-
-					if element and parser and parser.Load and payload then
-						local previousState = captureElementState(parser, element)
-						local applyOk, applyErr = pcall(parser.Load, element, payload)
-						if not applyOk then
-							warn("[ConfigAddon] Failed to load " .. tostring(entry.Flag) .. ": " .. tostring(applyErr))
-						else
-							local currentState = captureElementState(parser, element)
-							if not areValuesEqual(previousState, currentState) then
-								changedEntries[#changedEntries + 1] = entry
-							end
+				-- Phase 1: lightweight elements (Toggle, Input, Slider, Keybind)
+				for i = 1, #lightEntries, LOAD_BATCH_LIGHT do
+					for j = i, math.min(i + LOAD_BATCH_LIGHT - 1, #lightEntries) do
+						local e = lightEntries[j]
+						local ok, loadErr = pcall(e[2].Load, e[1], e[3])
+						if not ok then
+							warn("[LightConfigAddon] Failed to load " .. tostring(e[4]) .. ": " .. tostring(loadErr))
 						end
-					elseif element and entry.Payload ~= nil and not payload then
-						warn("[ConfigAddon] Skipped invalid payload for " .. tostring(entry.Flag))
 					end
+					if i + LOAD_BATCH_LIGHT - 1 < #lightEntries or #heavyEntries > 0 then
+						task.wait() -- yield to next frame
+					end
+				end
 
-					if LoadYieldDelay > 0 and index % LoadBatchSize == 0 then
-						task.wait(LoadYieldDelay)
+				-- Phase 2: heavy elements (Dropdown, Colorpicker) — 1 per frame
+				for i = 1, #heavyEntries do
+					local e = heavyEntries[i]
+					local ok, loadErr = pcall(e[2].Load, e[1], e[3])
+					if not ok then
+						warn("[LightConfigAddon] Failed to load " .. tostring(e[4]) .. ": " .. tostring(loadErr))
+					end
+					if i < #heavyEntries then
+						task.wait() -- yield to next frame
 					end
 				end
 			end)
+		end
 
-			busy = false
-
-			if not ok then
-				notifySafe("Load Config", "Failed while applying config: " .. tostring(loadErr), "lucide:triangle-alert", 7)
-				return
-			end
-
-			if context.ApplyCustomData then
-				local customOk, customErr = pcall(context.ApplyCustomData, decoded.__custom or {}, configName)
-				if not customOk then
-					warn("[ConfigAddon] Failed to apply custom data: " .. tostring(customErr))
-				end
-			end
-
-			syncTrackedCallbacks(changedEntries)
-
-			if context.OnAfterLoad then
-				local afterLoadOk, afterLoadErr = pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
-				if not afterLoadOk then
-					warn("[ConfigAddon] OnAfterLoad failed: " .. tostring(afterLoadErr))
-				end
-			end
-
-			if not silent then
-				notifySafe("Load Config", "Loaded: " .. configName, "lucide:folder-open")
-			end
-		end)
-
+		activeConfigName = sanitizeName(name) or activeConfigName
+		if configNameInput and configNameInput.Set then
+			configNameInput:Set(activeConfigName)
+		end
+		-- Lightweight UI update only (skip full file re-listing)
+		updateConfigUI()
 		return true
 	end
 
-	local function deleteConfig(configName)
-		if busy then
-			return false, "Config operation already in progress."
-		end
-
-		configName = sanitizeConfigName(configName)
-		if not configName then
-			return false, "Config name is invalid."
-		end
-
-		local filePath, err = getConfigPath(configName)
-		if not filePath then
+	local function deleteConfig(name)
+		local path, err = getConfigPath(name)
+		if not path then
 			return false, err
 		end
 
-		if not safeIsFile(filePath) then
+		if not isfile or not isfile(path) then
 			return false, "Config file does not exist."
 		end
 
-		local ok, deleteErr = safeDeleteFile(filePath)
+		local ok, deleteErr = pcall(delfile, path)
 		if not ok then
-			return false, deleteErr
+			return false, tostring(deleteErr)
 		end
 
-		if currentAutoloadName == configName then
-			clearAutoload()
-		end
-
-		refreshConfigFiles()
+		refreshList()
 		return true
+	end
+
+	if not Window or not Tab then
+		return {
+			Refresh = function()
+				return {}
+			end,
+		}
 	end
 
 	configNameInput = Tab:Input({
 		Title = "Config Name",
-		Desc = "New or selected config name.",
+		Desc = "Config file name.",
 		Placeholder = DefaultConfigName,
 		Value = activeConfigName,
 		InputIcon = "lucide:file-cog",
 		Callback = function(value)
-			local normalized = sanitizeConfigName(value)
+			local normalized = sanitizeName(value)
 			if normalized then
 				activeConfigName = normalized
-				refreshAutoloadButton()
 			end
 		end,
 	})
 
-	configFileDropdown = Tab:Dropdown({
+	configDropdown = Tab:Dropdown({
 		Title = "Config File",
-		Desc = "Existing config files.",
+		Desc = "Saved config files.",
 		Values = {},
 		Value = nil,
 		AllowNone = true,
 		Callback = function(value)
-			local normalized = sanitizeConfigName(value)
+			local normalized = sanitizeName(value)
 			if normalized then
 				activeConfigName = normalized
-				if configNameInput then
+				if configNameInput and configNameInput.Set then
 					configNameInput:Set(normalized)
 				end
-				refreshAutoloadButton()
 			end
+		end,
+	})
+
+	Tab:Button({
+		Title = "Refresh List",
+		Desc = "Reload saved configs.",
+		Callback = function()
+			refreshList()
 		end,
 	})
 
@@ -820,162 +535,94 @@ function ConfigAddon.Setup(context)
 		Title = "Auto Load",
 		Desc = "Current: none | Selected: " .. tostring(activeConfigName),
 		Callback = function()
-			local configName = getSelectedConfigName()
-			if currentAutoloadName == configName then
+			local selectedName = getSelectedName()
+			if currentAutoloadName == selectedName then
 				clearAutoload()
 				notifySafe("Auto Load", "Cleared autoload config.", "lucide:badge-x")
 				return
 			end
 
-			local ok, err = writeAutoload(configName)
+			local ok, err = writeAutoload(selectedName)
 			if not ok then
 				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			refreshAutoloadButton()
-			notifySafe("Auto Load", "Autoload set to: " .. configName, "lucide:badge-check")
-		end,
-	})
-
-	Tab:Button({
-		Title = "Refresh List",
-		Desc = "Refresh config file list.",
-		Callback = function()
-			refreshConfigFiles()
-		end,
-	})
-
-	Tab:Button({
-		Title = "CreateConfig",
-		Desc = "Create a new config.",
-		Callback = function()
-			local configName = getSelectedConfigName()
-			local ok, err = saveConfig(configName, true)
-			if not ok then
-				notifySafe("CreateConfig", tostring(err), "lucide:triangle-alert", 6)
-				return
-			end
-
-			notifySafe("CreateConfig", "Created: " .. configName, "lucide:file-plus-2")
+			notifySafe("Auto Load", "Autoload set to: " .. selectedName, "lucide:badge-check")
 		end,
 	})
 
 	Tab:Button({
 		Title = "Save Config",
-		Desc = "Overwrite the selected config.",
+		Desc = "Save current tracked values.",
 		Callback = function()
-			local configName = getSelectedConfigName()
-			local ok, err = saveConfig(configName, false)
+			local ok, err = saveConfig(getSelectedName())
 			if not ok then
 				notifySafe("Save Config", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			notifySafe("Save Config", "Saved: " .. configName, "lucide:save")
+			notifySafe("Save Config", "Saved: " .. getSelectedName(), "lucide:save")
 		end,
 	})
 
 	Tab:Button({
 		Title = "Load Config",
-		Desc = "Load config with suppressed callbacks.",
+		Desc = "Load selected config.",
 		Callback = function()
-			local configName = getSelectedConfigName()
-			local ok, err = loadConfig(configName, false)
+			local ok, err = loadConfig(getSelectedName())
 			if not ok then
 				notifySafe("Load Config", tostring(err), "lucide:triangle-alert", 6)
+				return
 			end
+
+			notifySafe("Load Config", "Loaded: " .. getSelectedName(), "lucide:folder-open")
 		end,
 	})
 
 	Tab:Button({
 		Title = "Delete Config",
-		Desc = "Delete the selected config.",
+		Desc = "Delete selected config.",
 		Callback = function()
-			local configName = getSelectedConfigName()
-			local ok, err = deleteConfig(configName)
+			local ok, err = deleteConfig(getSelectedName())
 			if not ok then
 				notifySafe("Delete Config", tostring(err), "lucide:triangle-alert", 6)
 				return
 			end
 
-			notifySafe("Delete Config", "Deleted: " .. configName, "lucide:trash-2")
+			notifySafe("Delete Config", "Deleted: " .. getSelectedName(), "lucide:trash-2")
 		end,
 	})
 
-	local function setSubFolder(folder)
-		activeSubFolder = sanitizeSubFolder(folder)
-		currentAutoloadName = readAutoload()
-		refreshConfigFiles()
-		return activeSubFolder
-	end
-
-	setIgnoredFlags(IgnoreFlags)
-	if IgnoreThemeSettings then
-		ignoreDefaultThemeSettings()
-	end
-	setSubFolder(context.SubFolder)
-
 	currentAutoloadName = readAutoload()
-	refreshConfigFiles()
+	refreshList()
 
 	if currentAutoloadName then
-		task.defer(function()
-			local ok, err = loadConfig(currentAutoloadName, true)
-			if ok then
-				notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
-			else
-				notifySafe("Auto Load", "Failed: " .. tostring(err), "lucide:triangle-alert", 7)
+		task.delay(0.5, function()
+			local ok, err = loadConfig(currentAutoloadName)
+			if not ok then
+				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 7)
+				return
 			end
+
+			notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
 		end)
 	end
 
 	return {
-		GetActiveName = function()
-			return activeConfigName
-		end,
+		Refresh = refreshList,
+		Save = saveConfig,
+		Load = loadConfig,
+		Delete = deleteConfig,
+		SetAutoload = writeAutoload,
+		ClearAutoload = clearAutoload,
 		GetAutoloadName = function()
 			return currentAutoloadName
 		end,
-		GetPath = function()
-			return getBasePath()
+		GetActiveName = function()
+			return activeConfigName
 		end,
-		GetSubFolder = function()
-			return activeSubFolder
-		end,
-		SetSubFolder = function(folder)
-			return setSubFolder(folder)
-		end,
-		SetIgnoreFlags = function(list)
-			setIgnoredFlags(list)
-			refreshConfigFiles(activeConfigName)
-		end,
-		IgnoreThemeSettings = function()
-			ignoreDefaultThemeSettings()
-			refreshConfigFiles(activeConfigName)
-		end,
-		Save = function(configName, failIfExists)
-			return saveConfig(configName, failIfExists)
-		end,
-		Load = function(configName, silent)
-			return loadConfig(configName, silent)
-		end,
-		Delete = function(configName)
-			return deleteConfig(configName)
-		end,
-		SetAutoload = function(configName)
-			local ok, err = writeAutoload(configName)
-			if ok then
-				refreshAutoloadButton()
-			end
-			return ok, err
-		end,
-		ClearAutoload = function()
-			clearAutoload()
-			refreshAutoloadButton()
-		end,
-		Refresh = refreshConfigFiles,
 	}
 end
 
-return ConfigAddon
+return LightConfigAddon
