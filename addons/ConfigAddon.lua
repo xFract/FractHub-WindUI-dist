@@ -341,6 +341,47 @@ function ConfigAddon.Setup(context)
 		return nil
 	end
 
+	local function areValuesEqual(left, right)
+		if left == right then
+			return true
+		end
+
+		if type(left) ~= type(right) then
+			return false
+		end
+
+		if type(left) ~= "table" then
+			return false
+		end
+
+		for key, value in pairs(left) do
+			if not areValuesEqual(value, right[key]) then
+				return false
+			end
+		end
+
+		for key in pairs(right) do
+			if left[key] == nil then
+				return false
+			end
+		end
+
+		return true
+	end
+
+	local function captureElementState(parser, element)
+		if not (parser and parser.Save and element) then
+			return nil
+		end
+
+		local ok, state = pcall(parser.Save, element)
+		if not ok then
+			return nil
+		end
+
+		return state
+	end
+
 	local function syncTrackedCallbacks(entries)
 		for _, entry in ipairs(entries) do
 			local element = entry.Element
@@ -518,7 +559,8 @@ function ConfigAddon.Setup(context)
 		refreshConfigFiles(configName)
 		busy = true
 
-		task.spawn(function()
+			task.spawn(function()
+			local changedEntries = {}
 			local ok, loadErr = suppressCallbacks(callbackElements, function()
 				for index, entry in ipairs(entries) do
 					local element = entry.Element
@@ -526,9 +568,15 @@ function ConfigAddon.Setup(context)
 					local parser = entry.Parser
 
 					if element and parser and parser.Load and payload then
+						local previousState = captureElementState(parser, element)
 						local applyOk, applyErr = pcall(parser.Load, element, payload)
 						if not applyOk then
 							warn("[ConfigAddon] Failed to load " .. tostring(entry.Flag) .. ": " .. tostring(applyErr))
+						else
+							local currentState = captureElementState(parser, element)
+							if not areValuesEqual(previousState, currentState) then
+								changedEntries[#changedEntries + 1] = entry
+							end
 						end
 					elseif element and entry.Payload ~= nil and not payload then
 						warn("[ConfigAddon] Skipped invalid payload for " .. tostring(entry.Flag))
@@ -554,7 +602,7 @@ function ConfigAddon.Setup(context)
 				end
 			end
 
-			syncTrackedCallbacks(entries)
+			syncTrackedCallbacks(changedEntries)
 
 			if context.OnAfterLoad then
 				local afterLoadOk, afterLoadErr = pcall(context.OnAfterLoad, decoded.__custom or {}, configName)
