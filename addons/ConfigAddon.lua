@@ -18,6 +18,7 @@ function ConfigAddon.Setup(context)
 	local activeConfigName = type(DefaultConfigName) == "string" and DefaultConfigName or "default"
 	local currentAutoloadName = nil
 	local busy = false
+	local parserCache = {}
 
 	local configNameInput
 	local configFileDropdown
@@ -290,10 +291,25 @@ function ConfigAddon.Setup(context)
 		return files
 	end
 
-	local function suppressCallbacks(callback)
+	local function getParserForType(manager, parserType)
+		if type(parserType) ~= "string" or parserType == "" then
+			return nil
+		end
+
+		local cachedParser = parserCache[parserType]
+		if cachedParser ~= nil then
+			return cachedParser or nil
+		end
+
+		local parser = manager and manager.Parser and manager.Parser[parserType]
+		parserCache[parserType] = parser or false
+		return parser
+	end
+
+	local function suppressCallbacks(elements, callback)
 		local originals = {}
 
-		for _, element in pairs(TrackedElements) do
+		for _, element in ipairs(elements) do
 			if element and element.Callback ~= nil then
 				originals[element] = element.Callback
 				element.Callback = function() end
@@ -327,7 +343,7 @@ function ConfigAddon.Setup(context)
 
 	local function syncTrackedCallbacks(entries)
 		for _, entry in ipairs(entries) do
-			local element = TrackedElements[entry.Flag]
+			local element = entry.Element
 			if element and type(element.Callback) == "function" then
 				local callbackValue = getElementCallbackValue(element, entry.Payload)
 				local ok, err = pcall(element.Callback, callbackValue)
@@ -365,7 +381,7 @@ function ConfigAddon.Setup(context)
 		}
 
 		for flag, element in pairs(TrackedElements) do
-			local parser = element and manager.Parser and manager.Parser[element.__type]
+			local parser = element and getParserForType(manager, element.__type)
 			if parser and parser.Save then
 				local ok, result = pcall(parser.Save, element)
 				if ok and result then
@@ -478,24 +494,36 @@ function ConfigAddon.Setup(context)
 		end
 
 		local entries = {}
+		local callbackElements = {}
 		for flag, payload in pairs(decoded.__elements or {}) do
-			table.insert(entries, { Flag = flag, Payload = payload })
+			local element = TrackedElements[flag]
+			local normalizedPayload = type(payload) == "table" and payload or nil
+			local parserType = normalizedPayload and normalizedPayload.__type
+			local parser = element and parserType and getParserForType(manager, parserType)
+
+			table.insert(entries, {
+				Flag = flag,
+				Payload = payload,
+				Element = element,
+				Parser = parser,
+				ValidPayload = normalizedPayload,
+			})
+
+			if element and parser and normalizedPayload and element.Callback ~= nil then
+				callbackElements[#callbackElements + 1] = element
+			end
 		end
-		table.sort(entries, function(a, b)
-			return tostring(a.Flag) < tostring(b.Flag)
-		end)
 
 		activeConfigName = configName
 		refreshConfigFiles(configName)
 		busy = true
 
 		task.spawn(function()
-			local ok, loadErr = suppressCallbacks(function()
+			local ok, loadErr = suppressCallbacks(callbackElements, function()
 				for index, entry in ipairs(entries) do
-					local element = TrackedElements[entry.Flag]
-					local payload = type(entry.Payload) == "table" and entry.Payload or nil
-					local parserType = payload and payload.__type
-					local parser = element and parserType and manager.Parser and manager.Parser[parserType]
+					local element = entry.Element
+					local payload = entry.ValidPayload
+					local parser = entry.Parser
 
 					if element and parser and parser.Load and payload then
 						local applyOk, applyErr = pcall(parser.Load, element, payload)
@@ -506,7 +534,7 @@ function ConfigAddon.Setup(context)
 						warn("[ConfigAddon] Skipped invalid payload for " .. tostring(entry.Flag))
 					end
 
-					if index % LoadBatchSize == 0 then
+					if LoadYieldDelay > 0 and index % LoadBatchSize == 0 then
 						task.wait(LoadYieldDelay)
 					end
 				end
