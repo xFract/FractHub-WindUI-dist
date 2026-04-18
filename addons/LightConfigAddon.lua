@@ -51,7 +51,14 @@ function LightConfigAddon.Setup(context)
 		return Window and Window.ConfigManager or nil
 	end
 
+	local cachedBasePath = nil
+	local folderVerified = false
+
 	local function getBasePath()
+		if cachedBasePath then
+			return cachedBasePath
+		end
+
 		local manager = getManager()
 		local path = manager and manager.Path
 		if type(path) ~= "string" or path == "" then
@@ -63,15 +70,21 @@ function LightConfigAddon.Setup(context)
 			path = path .. "/"
 		end
 
+		cachedBasePath = path
 		return path
 	end
 
 	local function ensureFolder(path)
+		if folderVerified then
+			return true
+		end
+
 		if not path then
 			return false, "Config path is unavailable."
 		end
 
 		if not (isfolder and makefolder) then
+			folderVerified = true
 			return true
 		end
 
@@ -104,10 +117,12 @@ function LightConfigAddon.Setup(context)
 			end
 		end
 
+		folderVerified = true
 		return true
 	end
 
-	local function getConfigPath(name)
+	-- Read-only path resolution: skips ensureFolder (folder must already exist for reads)
+	local function getConfigPathRead(name)
 		name = sanitizeName(name)
 		if not name then
 			return nil, "Config name is invalid."
@@ -118,12 +133,22 @@ function LightConfigAddon.Setup(context)
 			return nil, "Config path is unavailable."
 		end
 
-		local ok, err = ensureFolder(basePath)
-		if not ok then
+		return basePath .. name .. ".json"
+	end
+
+	-- Write path resolution: ensures folder exists before returning
+	local function getConfigPath(name)
+		local path, err = getConfigPathRead(name)
+		if not path then
 			return nil, err
 		end
 
-		return basePath .. name .. ".json"
+		local ok, folderErr = ensureFolder(getBasePath())
+		if not ok then
+			return nil, folderErr
+		end
+
+		return path
 	end
 
 	local function getAutoloadPath()
@@ -356,10 +381,13 @@ function LightConfigAddon.Setup(context)
 		return true
 	end
 
-	local LOAD_BATCH_SIZE = 2 -- elements restored per frame
+	local LOAD_BATCH_LIGHT = 3 -- lightweight elements (Toggle, Input, Slider, Keybind) per frame
+	local LOAD_BATCH_HEAVY = 1 -- heavy elements (Dropdown, Colorpicker) per frame
+
+	local HEAVY_TYPES = { Dropdown = true, Colorpicker = true }
 
 	local function loadConfig(name)
-		local path, err = getConfigPath(name)
+		local path, err = getConfigPathRead(name)
 		if not path then
 			return false, err
 		end
@@ -380,28 +408,48 @@ function LightConfigAddon.Setup(context)
 			return false, "Failed to parse config file."
 		end
 
-		-- Collect valid entries for batched restore
-		local entries = {}
+		-- Separate lightweight and heavy elements for optimal batching
+		local lightEntries = {}
+		local heavyEntries = {}
 		for flag, savedState in pairs(decoded) do
 			local element = TrackedElements[flag]
 			local parser = getParser(element)
 			if element and parser and parser.Load and type(savedState) == "table" then
-				entries[#entries + 1] = { element = element, parser = parser, state = savedState, flag = flag }
+				local entry = { element, parser, savedState, flag }
+				if HEAVY_TYPES[element.__type] then
+					heavyEntries[#heavyEntries + 1] = entry
+				else
+					lightEntries[#lightEntries + 1] = entry
+				end
 			end
 		end
 
-		-- Frame-distributed restore: LOAD_BATCH_SIZE elements per frame to prevent freezing
-		if #entries > 0 then
+		-- Frame-distributed restore: process light elements first, then heavy ones
+		local totalEntries = #lightEntries + #heavyEntries
+		if totalEntries > 0 then
 			task.spawn(function()
-				for i = 1, #entries, LOAD_BATCH_SIZE do
-					for j = i, math.min(i + LOAD_BATCH_SIZE - 1, #entries) do
-						local entry = entries[j]
-						local ok, loadErr = pcall(entry.parser.Load, entry.element, entry.state)
+				-- Phase 1: lightweight elements (Toggle, Input, Slider, Keybind)
+				for i = 1, #lightEntries, LOAD_BATCH_LIGHT do
+					for j = i, math.min(i + LOAD_BATCH_LIGHT - 1, #lightEntries) do
+						local e = lightEntries[j]
+						local ok, loadErr = pcall(e[2].Load, e[1], e[3])
 						if not ok then
-							warn("[LightConfigAddon] Failed to load " .. tostring(entry.flag) .. ": " .. tostring(loadErr))
+							warn("[LightConfigAddon] Failed to load " .. tostring(e[4]) .. ": " .. tostring(loadErr))
 						end
 					end
-					if i + LOAD_BATCH_SIZE - 1 < #entries then
+					if i + LOAD_BATCH_LIGHT - 1 < #lightEntries or #heavyEntries > 0 then
+						task.wait() -- yield to next frame
+					end
+				end
+
+				-- Phase 2: heavy elements (Dropdown, Colorpicker) — 1 per frame
+				for i = 1, #heavyEntries do
+					local e = heavyEntries[i]
+					local ok, loadErr = pcall(e[2].Load, e[1], e[3])
+					if not ok then
+						warn("[LightConfigAddon] Failed to load " .. tostring(e[4]) .. ": " .. tostring(loadErr))
+					end
+					if i < #heavyEntries then
 						task.wait() -- yield to next frame
 					end
 				end
