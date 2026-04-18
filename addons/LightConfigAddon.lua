@@ -14,8 +14,10 @@ function LightConfigAddon.Setup(context)
 	end
 
 	local activeConfigName = type(DefaultConfigName) == "string" and DefaultConfigName or "default"
+	local currentAutoloadName = nil
 	local configNameInput
 	local configDropdown
+	local autoloadButton
 
 	local function notifySafe(...)
 		local ok, err = pcall(Notify, ...)
@@ -124,6 +126,20 @@ function LightConfigAddon.Setup(context)
 		return basePath .. name .. ".json"
 	end
 
+	local function getAutoloadPath()
+		local basePath = getBasePath()
+		if not basePath then
+			return nil, "Config path is unavailable."
+		end
+
+		local ok, err = ensureFolder(basePath)
+		if not ok then
+			return nil, err
+		end
+
+		return basePath .. "autoload.txt"
+	end
+
 	local function getParser(element)
 		local manager = getManager()
 		if not manager or not manager.Parser or not element then
@@ -166,7 +182,59 @@ function LightConfigAddon.Setup(context)
 			configDropdown:Select(selectName)
 		end
 
+		if autoloadButton and autoloadButton.SetDesc then
+			autoloadButton:SetDesc(
+				"Current: " .. tostring(currentAutoloadName or "none") .. " | Selected: " .. tostring(getSelectedName())
+			)
+		end
+
 		return names
+	end
+
+	local function readAutoload()
+		local path = getAutoloadPath()
+		if not path or not isfile or not isfile(path) then
+			return nil
+		end
+
+		local ok, content = pcall(readfile, path)
+		if not ok or type(content) ~= "string" then
+			return nil
+		end
+
+		return sanitizeName(content)
+	end
+
+	local function writeAutoload(name)
+		local path, err = getAutoloadPath()
+		if not path then
+			return false, err
+		end
+
+		name = sanitizeName(name)
+		if not name then
+			return false, "Config name is invalid."
+		end
+
+		local ok, writeErr = pcall(writefile, path, name)
+		if not ok then
+			return false, tostring(writeErr)
+		end
+
+		currentAutoloadName = name
+		refreshList(activeConfigName)
+		return true
+	end
+
+	local function clearAutoload()
+		local path = getAutoloadPath()
+		currentAutoloadName = nil
+
+		if path and isfile and isfile(path) and delfile then
+			pcall(delfile, path)
+		end
+
+		refreshList(activeConfigName)
 	end
 
 	local function saveConfig(name)
@@ -313,6 +381,27 @@ function LightConfigAddon.Setup(context)
 		end,
 	})
 
+	autoloadButton = Tab:Button({
+		Title = "Auto Load",
+		Desc = "Current: none | Selected: " .. tostring(activeConfigName),
+		Callback = function()
+			local selectedName = getSelectedName()
+			if currentAutoloadName == selectedName then
+				clearAutoload()
+				notifySafe("Auto Load", "Cleared autoload config.", "lucide:badge-x")
+				return
+			end
+
+			local ok, err = writeAutoload(selectedName)
+			if not ok then
+				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 6)
+				return
+			end
+
+			notifySafe("Auto Load", "Autoload set to: " .. selectedName, "lucide:badge-check")
+		end,
+	})
+
 	Tab:Button({
 		Title = "Save Config",
 		Desc = "Save current tracked values.",
@@ -355,13 +444,31 @@ function LightConfigAddon.Setup(context)
 		end,
 	})
 
+	currentAutoloadName = readAutoload()
 	refreshList()
+
+	if currentAutoloadName then
+		task.defer(function()
+			local ok, err = loadConfig(currentAutoloadName)
+			if not ok then
+				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 7)
+				return
+			end
+
+			notifySafe("Auto Load", "Loaded: " .. currentAutoloadName, "lucide:hard-drive-download", 6)
+		end)
+	end
 
 	return {
 		Refresh = refreshList,
 		Save = saveConfig,
 		Load = loadConfig,
 		Delete = deleteConfig,
+		SetAutoload = writeAutoload,
+		ClearAutoload = clearAutoload,
+		GetAutoloadName = function()
+			return currentAutoloadName
+		end,
 		GetActiveName = function()
 			return activeConfigName
 		end,
