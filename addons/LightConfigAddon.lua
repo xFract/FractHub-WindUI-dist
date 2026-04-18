@@ -140,7 +140,7 @@ function LightConfigAddon.Setup(context)
 		return basePath .. "autoload.txt"
 	end
 
-	-- Lightweight parser: skips Tween animations and Callback invocations during restore
+	-- Lightweight parser: skips Tween animations during restore, Callbacks still fire for state sync
 	local LightParser = {
 		Toggle = {
 			Save = function(el)
@@ -148,7 +148,7 @@ function LightConfigAddon.Setup(context)
 			end,
 			Load = function(el, data)
 				if el and el.Set then
-					el:Set(data.value, false, true) -- isCallback=false, isAnim=true (instant position)
+					el:Set(data.value, nil, true) -- isCallback=nil(→true), isAnim=true (instant position, no Tween)
 				end
 			end,
 		},
@@ -157,12 +157,8 @@ function LightConfigAddon.Setup(context)
 				return { __type = "Dropdown", value = el.Value }
 			end,
 			Load = function(el, data)
-				if el then
-					-- Set value directly and update display without calling Refresh (avoids Destroy/recreate)
-					el.Value = data.value
-					if el.Display then
-						el:Display()
-					end
+				if el and el.Select then
+					el:Select(data.value) -- triggers Refresh + Callback for state sync
 				end
 			end,
 		},
