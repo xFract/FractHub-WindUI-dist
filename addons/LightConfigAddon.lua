@@ -140,9 +140,90 @@ function LightConfigAddon.Setup(context)
 		return basePath .. "autoload.txt"
 	end
 
+	-- Lightweight parser: skips Tween animations and Callback invocations during restore
+	local LightParser = {
+		Toggle = {
+			Save = function(el)
+				return { __type = "Toggle", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value, false, true) -- isCallback=false, isAnim=true (instant position)
+				end
+			end,
+		},
+		Dropdown = {
+			Save = function(el)
+				return { __type = "Dropdown", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el then
+					-- Set value directly and update display without calling Refresh (avoids Destroy/recreate)
+					el.Value = data.value
+					if el.Display then
+						el:Display()
+					end
+				end
+			end,
+		},
+		Input = {
+			Save = function(el)
+				return { __type = "Input", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value)
+				end
+			end,
+		},
+		Slider = {
+			Save = function(el)
+				return { __type = "Slider", value = el.Value and el.Value.Default or nil }
+			end,
+			Load = function(el, data)
+				if el and el.Set and data.value then
+					el:Set(tonumber(data.value))
+				end
+			end,
+		},
+		Keybind = {
+			Save = function(el)
+				return { __type = "Keybind", value = el.Value }
+			end,
+			Load = function(el, data)
+				if el and el.Set then
+					el:Set(data.value)
+				end
+			end,
+		},
+		Colorpicker = {
+			Save = function(el)
+				return {
+					__type = "Colorpicker",
+					value = el.Default and el.Default:ToHex() or "FFFFFF",
+					transparency = el.Transparency or nil,
+				}
+			end,
+			Load = function(el, data)
+				if el and el.Update and data.value then
+					el:Update(Color3.fromHex(data.value), data.transparency or nil)
+				end
+			end,
+		},
+	}
+
 	local function getParser(element)
+		if not element or not element.__type then
+			return nil
+		end
+
+		-- Use lightweight parser first, fall back to ConfigManager parser
+		if LightParser[element.__type] then
+			return LightParser[element.__type]
+		end
+
 		local manager = getManager()
-		if not manager or not manager.Parser or not element then
+		if not manager or not manager.Parser then
 			return nil
 		end
 
@@ -172,6 +253,15 @@ function LightConfigAddon.Setup(context)
 		return result
 	end
 
+	-- Lightweight UI update: only updates button desc without re-listing files
+	local function updateConfigUI()
+		if autoloadButton and autoloadButton.SetDesc then
+			autoloadButton:SetDesc(
+				"Current: " .. tostring(currentAutoloadName or "none") .. " | Selected: " .. tostring(getSelectedName())
+			)
+		end
+	end
+
 	local function refreshList(selectName)
 		local names = listConfigs()
 		if configDropdown and configDropdown.Refresh then
@@ -182,11 +272,7 @@ function LightConfigAddon.Setup(context)
 			configDropdown:Select(selectName)
 		end
 
-		if autoloadButton and autoloadButton.SetDesc then
-			autoloadButton:SetDesc(
-				"Current: " .. tostring(currentAutoloadName or "none") .. " | Selected: " .. tostring(getSelectedName())
-			)
-		end
+		updateConfigUI()
 
 		return names
 	end
@@ -274,6 +360,8 @@ function LightConfigAddon.Setup(context)
 		return true
 	end
 
+	local LOAD_BATCH_SIZE = 2 -- elements restored per frame
+
 	local function loadConfig(name)
 		local path, err = getConfigPath(name)
 		if not path then
@@ -296,22 +384,40 @@ function LightConfigAddon.Setup(context)
 			return false, "Failed to parse config file."
 		end
 
+		-- Collect valid entries for batched restore
+		local entries = {}
 		for flag, savedState in pairs(decoded) do
 			local element = TrackedElements[flag]
 			local parser = getParser(element)
 			if element and parser and parser.Load and type(savedState) == "table" then
-				local ok, loadErr = pcall(parser.Load, element, savedState)
-				if not ok then
-					warn("[LightConfigAddon] Failed to load " .. tostring(flag) .. ": " .. tostring(loadErr))
-				end
+				entries[#entries + 1] = { element = element, parser = parser, state = savedState, flag = flag }
 			end
+		end
+
+		-- Frame-distributed restore: LOAD_BATCH_SIZE elements per frame to prevent freezing
+		if #entries > 0 then
+			task.spawn(function()
+				for i = 1, #entries, LOAD_BATCH_SIZE do
+					for j = i, math.min(i + LOAD_BATCH_SIZE - 1, #entries) do
+						local entry = entries[j]
+						local ok, loadErr = pcall(entry.parser.Load, entry.element, entry.state)
+						if not ok then
+							warn("[LightConfigAddon] Failed to load " .. tostring(entry.flag) .. ": " .. tostring(loadErr))
+						end
+					end
+					if i + LOAD_BATCH_SIZE - 1 < #entries then
+						task.wait() -- yield to next frame
+					end
+				end
+			end)
 		end
 
 		activeConfigName = sanitizeName(name) or activeConfigName
 		if configNameInput and configNameInput.Set then
 			configNameInput:Set(activeConfigName)
 		end
-		refreshList(activeConfigName)
+		-- Lightweight UI update only (skip full file re-listing)
+		updateConfigUI()
 		return true
 	end
 
@@ -448,7 +554,7 @@ function LightConfigAddon.Setup(context)
 	refreshList()
 
 	if currentAutoloadName then
-		task.defer(function()
+		task.delay(0.5, function()
 			local ok, err = loadConfig(currentAutoloadName)
 			if not ok then
 				notifySafe("Auto Load", tostring(err), "lucide:triangle-alert", 7)
